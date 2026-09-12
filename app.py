@@ -10,6 +10,7 @@
 import asyncio
 import json
 import logging
+import re
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -161,6 +162,53 @@ async def _auto_title(s: dict) -> str | None:
     return None
 
 
+def _extract_json(text: str) -> dict:
+    """从模型输出里抠出第一个 JSON 对象（容忍代码块围栏/前后废话）"""
+    m = re.search(r"\{.*\}", text or "", re.S)
+    if not m:
+        return {}
+    try:
+        return json.loads(m.group(0))
+    except Exception:
+        return {}
+
+
+async def _analyze_topic(sid: str) -> dict | None:
+    """话题自动分析：分类/关键词/定位/推荐格式，写回会话；失败静默返回 None"""
+    async with _lock(sid):
+        s = _get_session(sid)
+        if not s.get("messages"):
+            return None
+        try:
+            raw = await llm.chat_once(
+                [{"role": "user", "content": prompts.topic_analysis_prompt(
+                    store.TOPIC_CATEGORIES, prompts.DRAFT_FORMATS) + _transcript(s, 6000)}],
+                model=llm.fast_model, max_tokens=300, temperature=0.3, thinking=False,
+            )
+            data = _extract_json(raw)
+            if not data:
+                raise RuntimeError(f"无法解析: {raw[:80]}")
+            cat = data.get("category")
+            if cat not in store.TOPIC_CATEGORIES:
+                cat = "other"
+            analysis = {
+                "category": cat,
+                "tags": [str(t).strip()[:12] for t in (data.get("tags") or []) if str(t).strip()][:5],
+                "summary": str(data.get("summary", "")).strip()[:60],
+                "recommended_formats": [f for f in (data.get("recommended_formats") or [])
+                                        if f in prompts.DRAFT_FORMATS][:2],
+                "analyzed_turns": sum(1 for m in s["messages"] if m["role"] == "user"),
+                "ts": store.now_ts(),
+            }
+            s["topic_analysis"] = analysis
+            store.save_session(s)
+            log.info("话题分析完成(sid=%s): %s %s", sid, cat, analysis["tags"])
+            return analysis
+        except Exception as e:
+            log.warning("话题分析失败: %s", e)
+            return None
+
+
 # ---------------------------------------------------------------------------
 # 飞书同步（后台任务，不阻塞聊天）
 # ---------------------------------------------------------------------------
@@ -280,6 +328,7 @@ def get_config():
         },
         "server": {"lan": bool(CONFIG.get("server", {}).get("lan"))},
         "modes": store.DISCUSSION_MODES,
+        "topic_categories": store.TOPIC_CATEGORIES,
         "draft_formats": prompts.DRAFT_FORMATS,
         "draft_tones": prompts.DRAFT_TONES,
         "draft_lengths": prompts.DRAFT_LENGTHS,
@@ -364,6 +413,20 @@ def session_delete(sid: str):
     return {"ok": True}
 
 
+@app.post("/api/sessions/{sid}/analyze")
+async def session_analyze(sid: str):
+    """手动重跑话题分析"""
+    s = store.load_session(sid)
+    if not s:
+        raise HTTPException(404, "会话不存在")
+    if not s.get("messages"):
+        raise HTTPException(400, "还没有讨论内容")
+    r = await _analyze_topic(sid)
+    if not r:
+        raise HTTPException(502, "分析失败，稍后再试")
+    return {"analysis": r}
+
+
 # ---------------------------------------------------------------------------
 # 聊天（SSE 流式）
 # ---------------------------------------------------------------------------
@@ -414,6 +477,15 @@ async def chat(sid: str, body: ChatBody):
             task = asyncio.create_task(_sync_turn_to_feishu(sid))
             _bg_tasks.add(task)
             task.add_done_callback(_bg_tasks.discard)
+
+            # 话题自动分析：首轮后跑一次，之后每 8 轮自动刷新
+            user_turns = sum(1 for m in s["messages"] if m["role"] == "user")
+            analyzed = (s.get("topic_analysis") or {}).get("analyzed_turns", 0)
+            if user_turns == 1 or user_turns - analyzed >= 8:
+                t2 = asyncio.create_task(_analyze_topic(sid))
+                _bg_tasks.add(t2)
+                t2.add_done_callback(_bg_tasks.discard)
+
             yield _sse({"t": "done", "title": s["title"] if title_changed else None,
                         "syncing": True})
 

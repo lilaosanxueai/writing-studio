@@ -107,6 +107,7 @@ async function sseFetch(path, body, onEvent) {
 // ───────────────────────── 会话 ─────────────────────────
 async function loadSessions(pickFirst = false) {
   state.sessions = await apiJson("/api/sessions");
+  renderCategoryFilter();
   renderSessionSelect();
   if (pickFirst && state.sessions.length && !state.session) {
     await openSession(state.sessions[0].id);
@@ -114,20 +115,46 @@ async function loadSessions(pickFirst = false) {
 }
 
 function renderSessionSelect() {
+  const filter = $("#categoryFilter").value || "all";
+  const list = filter === "all" ? state.sessions
+    : state.sessions.filter(s => s.category === filter);
   const sel = $("#sessionSelect");
   sel.innerHTML = "";
-  for (const s of state.sessions) {
+  for (const s of list) {
     const opt = document.createElement("option");
     opt.value = s.id;
     opt.textContent = s.title + (s.spark_count ? ` 💡${s.spark_count}` : "");
     if (state.session && s.id === state.session.id) opt.selected = true;
     sel.appendChild(opt);
   }
-  if (!state.sessions.length) {
+  if (!list.length) {
     const opt = document.createElement("option");
-    opt.textContent = "（还没有话题）";
+    opt.textContent = filter === "all" ? "（还没有话题）" : "（该分类下暂无话题）";
     sel.appendChild(opt);
   }
+}
+
+function renderCategoryFilter() {
+  const cats = (state.config && state.config.topic_categories) || {};
+  const counts = {};
+  for (const s of state.sessions) {
+    if (s.category) counts[s.category] = (counts[s.category] || 0) + 1;
+  }
+  const sel = $("#categoryFilter");
+  const prev = sel.value || "all";
+  sel.innerHTML = "";
+  const all = document.createElement("option");
+  all.value = "all";
+  all.textContent = `全部分类（${state.sessions.length}）`;
+  sel.appendChild(all);
+  for (const [k, label] of Object.entries(cats)) {
+    if (!counts[k]) continue;
+    const o = document.createElement("option");
+    o.value = k;
+    o.textContent = `${label}（${counts[k]}）`;
+    sel.appendChild(o);
+  }
+  sel.value = prev === "all" || counts[prev] ? prev : "all";
 }
 
 async function openSession(id) {
@@ -144,11 +171,52 @@ function renderSession() {
   $("#chatEmpty").style.display = s.messages.length ? "none" : "";
   $("#topicTitle").textContent = s.title;
   $("#modeSelect").value = s.mode;
+  renderAnalysis();
 
   const list = $("#chatList");
   list.innerHTML = "";
   for (const m of s.messages) list.appendChild(renderMessage(m));
   scrollChatBottom();
+}
+
+// 话题自动分析结果 → 分类徽标 + 关键词 + 一句话定位
+function renderAnalysis() {
+  const s = state.session;
+  const box = $("#topicTags");
+  if (!s || !s.topic_analysis || !s.topic_analysis.category) {
+    box.hidden = true;
+    box.innerHTML = "";
+    return;
+  }
+  const ta = s.topic_analysis;
+  const cats = (state.config && state.config.topic_categories) || {};
+  const fmts = (state.config && state.config.draft_formats) || {};
+  box.innerHTML = "";
+  const catChip = document.createElement("span");
+  catChip.className = "cat-chip";
+  catChip.dataset.cat = ta.category;
+  catChip.textContent = cats[ta.category] || ta.category;
+  catChip.title = "话题分类（自动分析，点 🏷 分析可重跑）";
+  box.appendChild(catChip);
+  for (const t of ta.tags || []) {
+    const chip = document.createElement("span");
+    chip.className = "tag-chip";
+    chip.textContent = t;
+    box.appendChild(chip);
+  }
+  if (ta.summary) {
+    const sum = document.createElement("span");
+    sum.className = "topic-analysis-summary";
+    sum.textContent = ta.summary;
+    box.appendChild(sum);
+  }
+  if ((ta.recommended_formats || []).length) {
+    const rec = document.createElement("span");
+    rec.className = "topic-analysis-summary";
+    rec.textContent = "→ 适合：" + ta.recommended_formats.map(f => fmts[f] || f).join("、");
+    box.appendChild(rec);
+  }
+  box.hidden = false;
 }
 
 // ───────────────────────── 消息渲染 ─────────────────────────
@@ -269,6 +337,8 @@ async function sendMessage(text) {
           $("#topicTitle").textContent = ev.title;
           loadSessions();
         }
+        // 话题分析在后台跑，延迟再刷一次拿结果
+        setTimeout(refreshSessionData, 2600);
       } else if (ev.t === "error") {
         throw new Error(ev.v);
       }
@@ -302,6 +372,40 @@ async function refreshSessionData() {
     renderDrafts();
     await loadSessions();
   } catch (e) { /* 会话可能被删 */ }
+}
+
+// 手动重跑话题分析
+async function runAnalysis() {
+  if (!state.session) return;
+  if (!state.session.messages.length) { toast("还没有讨论内容", true); return; }
+  $("#btnAnalyze").disabled = true;
+  try {
+    const r = await apiJson(`/api/sessions/${state.session.id}/analyze`, { method: "POST" });
+    await refreshSessionData();
+    toast("已重新分析 🏷");
+  } catch (e) { toast(e.message, true); }
+  finally { $("#btnAnalyze").disabled = false; }
+}
+
+// 文案工坊：搭档推荐格式 → 可点选
+function renderRecRow() {
+  const row = $("#draftRecRow");
+  const ta = state.session && state.session.topic_analysis;
+  const fmts = (state.config && state.config.draft_formats) || {};
+  const recs = (ta && ta.recommended_formats) || [];
+  row.innerHTML = `<span class="rec-label">🏷 搭档推荐：</span>`;
+  if (!recs.length) {
+    row.hidden = true;
+    return;
+  }
+  for (const f of recs) {
+    const chip = document.createElement("button");
+    chip.className = "rec-chip";
+    chip.textContent = fmts[f] || f;
+    chip.onclick = () => { $("#draftFormat").value = f; };
+    row.appendChild(chip);
+  }
+  row.hidden = false;
 }
 
 // ───────────────────────── 灵感 ─────────────────────────
@@ -771,6 +875,8 @@ async function init() {
   $("#newTopicTitle").onkeydown = (e) => { if (e.key === "Enter") createTopic(); };
 
   $("#sessionSelect").onchange = (e) => e.target.value && openSession(e.target.value);
+  $("#categoryFilter").onchange = () => renderSessionSelect();
+  $("#btnAnalyze").onclick = runAnalysis;
 
   $("#btnSend").onclick = () => {
     const t = $("#inputBox").value.trim();
@@ -834,6 +940,7 @@ async function init() {
   $("#btnNewDraft").onclick = () => {
     if (!state.session) { toast("先新建一个话题", true); return; }
     $("#draftComposer").hidden = !$("#draftComposer").hidden;
+    renderRecRow();
   };
   $("#btnGenDraft").onclick = generateDraft;
 

@@ -34,6 +34,18 @@ DISCUSSION_MODES = {
     "challenge": "唱反调",
 }
 
+# 话题分类体系（自动分析用，key 会存进会话数据）
+TOPIC_CATEGORIES = {
+    "opinion": "观点评论",
+    "story": "个人故事",
+    "idea": "产品点子",
+    "explainer": "知识科普",
+    "fiction": "创意脑洞",
+    "journal": "情绪随笔",
+    "method": "方法工具",
+    "other": "其他",
+}
+
 
 def now_ts() -> float:
     return time.time()
@@ -138,6 +150,7 @@ def list_sessions() -> list:
                 continue
             s = load_session(fn[:-5])
             if s:
+                ta = s.get("topic_analysis") or {}
                 out.append({
                     "id": s["id"],
                     "title": s["title"],
@@ -146,6 +159,7 @@ def list_sessions() -> list:
                     "message_count": len(s.get("messages", [])),
                     "spark_count": len(s.get("sparks", [])),
                     "draft_count": len(s.get("drafts", [])),
+                    "category": ta.get("category", ""),
                 })
     out.sort(key=lambda x: x["updated_at"], reverse=True)
     return out

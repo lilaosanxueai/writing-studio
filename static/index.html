@@ -17,6 +17,7 @@
     </div>
   </div>
   <div class="topbar-actions">
+    <select id="categoryFilter" title="按分类筛选话题"></select>
     <select id="sessionSelect" title="切换话题"></select>
     <button id="btnNewTopic" class="btn btn-primary">＋ 新话题</button>
     <button id="btnSettings" class="btn btn-ghost" title="设置">⚙</button>
@@ -35,8 +36,10 @@
       <div class="topic-controls">
         <label class="mode-label">模式</label>
         <select id="modeSelect"></select>
+        <button id="btnAnalyze" class="btn btn-ghost btn-sm" title="重新分析话题分类">🏷 分析</button>
         <button id="btnSummary" class="btn btn-ghost">📌 小结</button>
       </div>
+      <div id="topicTags" class="topic-tags" hidden></div>
     </div>
 
     <div id="chatScroll" class="chat-scroll">
@@ -110,6 +113,9 @@
         <div class="field">
           <label>附加要求（可选）</label>
           <textarea id="draftExtra" rows="2" placeholder="例如：开头用一个故事；面向新手读者"></textarea>
+        </div>
+        <div id="draftRecRow" class="rec-row" hidden>
+          <span class="rec-label">🏷 搭档推荐：</span>
         </div>
         <button id="btnGenDraft" class="btn btn-primary btn-block">开始整理成稿</button>
       </div>

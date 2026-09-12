@@ -203,6 +203,39 @@ input, select, textarea { font-family: inherit; color: var(--ink); }
   border: 1px dashed var(--line); border-radius: var(--radius);
 }
 
+/* ─────────── 话题标签（自动分析） ─────────── */
+.topic-tags {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  width: 100%; margin-top: 2px;
+}
+.cat-chip {
+  padding: 2px 11px; border-radius: 11px; font-size: 12px;
+  color: #fff; background: var(--ink-3); flex-shrink: 0;
+}
+.cat-chip[data-cat="opinion"] { background: #b3542e; }
+.cat-chip[data-cat="story"] { background: #4d7c5a; }
+.cat-chip[data-cat="idea"] { background: #b98a2f; }
+.cat-chip[data-cat="explainer"] { background: #3a6ea5; }
+.cat-chip[data-cat="fiction"] { background: #8250a8; }
+.cat-chip[data-cat="journal"] { background: #a8586b; }
+.cat-chip[data-cat="method"] { background: #5a7d6c; }
+.topic-analysis-summary { font-size: 12px; color: var(--ink-3); font-style: italic; }
+.tag-chip {
+  border: 1px solid var(--line); background: var(--card);
+  padding: 2px 9px; border-radius: 11px; font-size: 12px; color: var(--ink-2);
+}
+#categoryFilter {
+  max-width: 130px; padding: 7px 6px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--card); font-size: 13px;
+}
+.rec-row { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 10px; }
+.rec-label { font-size: 12.5px; color: var(--gold); }
+.rec-chip {
+  border: 1px dashed #d0b25f; background: var(--gold-soft); color: #7a5d18;
+  font-size: 12.5px; padding: 3px 12px; border-radius: 13px;
+}
+.rec-chip:hover { background: var(--gold); color: #fff; }
+
 /* ─────────── 灵感卡片 ─────────── */
 .spark-list { display: flex; flex-direction: column; gap: 10px; }
 .spark-card {

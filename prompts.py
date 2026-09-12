@@ -88,6 +88,23 @@ def title_prompt(first_exchange: str) -> str:
     )
 
 
+def topic_analysis_prompt(categories: dict, formats: dict) -> str:
+    """话题自动分析：分类 + 关键词 + 一句话定位 + 推荐文案格式（严格 JSON 输出）"""
+    cats = "；".join(f"{k}={v}" for k, v in categories.items())
+    fmts = "；".join(f"{k}={v}" for k, v in formats.items())
+    return (
+        "你是写作话题分析器。分析下面的讨论，判断它属于哪类写作话题。"
+        "只输出一个 JSON 对象，不要任何解释、不要代码块标记：\n"
+        '{"category": "分类key", "tags": ["关键词", "关键词"], '
+        '"summary": "一句话说明这个话题真正在聊什么（30字以内）", '
+        '"recommended_formats": ["格式key"]}\n\n'
+        f"category 只能从这些 key 里选一个：{cats}\n"
+        "tags：3~5 个简短关键词，来自讨论内容本身。\n"
+        f"recommended_formats：从素材特质看最适合整理成哪 1~2 种文案，只能从这些 key 里选：{fmts}\n\n"
+        "讨论内容：\n"
+    )
+
+
 DRAFT_FORMATS = {
     "wechat": "公众号文章",
     "xiaohongshu": "小红书笔记",
