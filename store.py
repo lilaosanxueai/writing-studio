@@ -88,6 +88,31 @@ def save_state(st: dict):
 
 
 # ---------------------------------------------------------------------------
+# 写作画像（跨话题的搭档记忆，存在全局 state 里）
+# ---------------------------------------------------------------------------
+def get_profile() -> dict:
+    return load_state().get("writer_profile") or {}
+
+
+def save_profile(text: str, total_turns: int):
+    st = load_state()
+    st["writer_profile"] = {"text": text.strip()[:400], "total_turns": total_turns, "ts": now_ts()}
+    save_state(st)
+
+
+def get_total_user_turns() -> int:
+    """所有会话的用户发言总轮数（画像刷新的触发计数）"""
+    return int(load_state().get("total_user_turns", 0))
+
+
+def bump_total_user_turns(n: int = 1) -> int:
+    st = load_state()
+    st["total_user_turns"] = int(st.get("total_user_turns", 0)) + n
+    save_state(st)
+    return st["total_user_turns"]
+
+
+# ---------------------------------------------------------------------------
 # 会话
 # ---------------------------------------------------------------------------
 def new_session(title: str = "", mode: str = "free") -> dict:
@@ -155,10 +180,13 @@ def list_sessions() -> list:
                     "id": s["id"],
                     "title": s["title"],
                     "mode": s.get("mode", "free"),
+                    "created_at": s.get("created_at", 0),
                     "updated_at": s.get("updated_at", 0),
                     "message_count": len(s.get("messages", [])),
                     "spark_count": len(s.get("sparks", [])),
                     "draft_count": len(s.get("drafts", [])),
+                    "chars": sum(len(m.get("content", "")) for m in s.get("messages", []))
+                             + sum(len(d.get("content", "")) for d in s.get("drafts", [])),
                     "category": ta.get("category", ""),
                 })
     out.sort(key=lambda x: x["updated_at"], reverse=True)

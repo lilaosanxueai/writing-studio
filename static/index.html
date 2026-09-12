@@ -47,6 +47,7 @@
         <div class="empty-art">🖋️</div>
         <h3>从一个念头开始</h3>
         <p>丢进来一个话题、一句牢骚、一个模糊的想法——<br>搭档会陪你把它聊成能写的东西。</p>
+        <div id="weekStats" class="week-stats" hidden></div>
         <div class="empty-suggestions">
           <button class="chip-suggest" data-fill="我最近想写一篇关于「为什么人越来越不想社交」的东西，但只有个模糊感觉">想写「为什么人越来越不想社交」</button>
           <button class="chip-suggest" data-fill="帮我把「AI 时代还要不要学写作」这个话题聊透，我想写篇公众号">聊透「AI 时代还要不要学写作」</button>
@@ -64,6 +65,7 @@
         <button class="chip" data-fill="到目前为止，哪些点你觉得最值得写进成稿？">💎 挑出金子</button>
       </div>
       <div class="composer-row">
+        <button id="btnMic" class="btn btn-ghost btn-mic" title="语音输入" hidden>🎤</button>
         <textarea id="inputBox" rows="3" placeholder="说说你的想法…（Enter 发送，Shift+Enter 换行）"></textarea>
         <button id="btnSend" class="btn btn-primary btn-send">发送</button>
       </div>
@@ -75,6 +77,7 @@
     <nav class="tabs">
       <button class="tab active" data-tab="sparks">💡 灵感<span id="sparkBadge" class="badge" hidden>0</span></button>
       <button class="tab" data-tab="drafts">✍️ 文案<span id="draftBadge" class="badge" hidden>0</span></button>
+      <button class="tab" data-tab="library">🗂 灵感库</button>
       <button class="tab" data-tab="feishu">📘 飞书</button>
     </nav>
 
@@ -117,11 +120,33 @@
         <div id="draftRecRow" class="rec-row" hidden>
           <span class="rec-label">🏷 搭档推荐：</span>
         </div>
+        <div id="sparkPicker" class="spark-picker" hidden>
+          <div class="picker-head">
+            <label>素材精选（勾选的灵感会作为必用素材）</label>
+            <span class="picker-ops">
+              <button type="button" class="mini-btn" id="pickerAll">全选</button>
+              <button type="button" class="mini-btn" id="pickerNone">全不选</button>
+            </span>
+          </div>
+          <div id="pickerList" class="picker-list"></div>
+        </div>
         <button id="btnGenDraft" class="btn btn-primary btn-block">开始整理成稿</button>
       </div>
       <div id="draftList" class="draft-list">
         <div class="tab-empty">还没有文案<br>聊出素材后点「生成文案」</div>
       </div>
+    </div>
+
+    <!-- 灵感库（全局） -->
+    <div id="tab-library" class="tab-body">
+      <div class="tab-head">
+        <p class="tab-hint">跨话题的所有灵感卡片 <span id="libTotal"></span></p>
+        <button id="btnCollide" class="btn btn-primary btn-sm">🎲 灵感碰撞</button>
+      </div>
+      <div class="lib-search">
+        <input id="libSearch" placeholder="搜灵感或话题…">
+      </div>
+      <div id="libList" class="spark-list"></div>
     </div>
 
     <!-- 飞书 -->
@@ -147,6 +172,20 @@
     </div>
   </aside>
 </main>
+
+<!-- ═══════════ 灵感碰撞弹窗 ═══════════ -->
+<div id="modalCollide" class="modal-mask" hidden>
+  <div class="modal modal-wide">
+    <h3>🎲 灵感碰撞</h3>
+    <div id="collideBody">
+      <div class="collide-loading">从灵感库里随机抽几张卡片，找它们之间的隐秘关联…</div>
+    </div>
+    <div class="modal-actions">
+      <button id="btnCollideAgain" class="btn btn-ghost" hidden>🔄 再撞一次</button>
+      <button class="btn btn-primary" data-close>关闭</button>
+    </div>
+  </div>
+</div>
 
 <!-- ═══════════ 新话题弹窗 ═══════════ -->
 <div id="modalNew" class="modal-mask" hidden>
@@ -219,6 +258,13 @@
             <input id="cfgBackupKey" type="password" placeholder="已保存（不回显）">
             <input id="cfgBackupModel" placeholder="备用模型名">
           </div>
+        </div>
+      </section>
+      <section>
+        <h4>写作画像（搭档对你的跨话题记忆）</h4>
+        <textarea id="profileText" class="profile-text" rows="4" readonly placeholder="聊几轮后自动生成；也可点「立即更新」"></textarea>
+        <div class="modal-actions" style="margin-top:8px">
+          <button id="btnProfileRefresh" class="btn btn-ghost btn-sm">🔄 立即更新</button>
         </div>
       </section>
       <section>

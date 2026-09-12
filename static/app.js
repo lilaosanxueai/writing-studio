@@ -198,6 +198,16 @@ function renderAnalysis() {
   catChip.textContent = cats[ta.category] || ta.category;
   catChip.title = "话题分类（自动分析，点 🏷 分析可重跑）";
   box.appendChild(catChip);
+  // 素材成熟度：进度条 + 提示（≥80 视为可以动笔）
+  if (typeof ta.maturity === "number") {
+    const m = document.createElement("span");
+    const ready = ta.maturity >= 80;
+    m.className = "maturity" + (ready ? " ready" : "");
+    m.title = ta.maturity_hint || "";
+    m.innerHTML = `<span class="maturity-bar"><span class="maturity-fill" style="width:${ta.maturity}%"></span></span>` +
+      `<span class="maturity-text">${ready ? "✍️ 可以动笔了" : ta.maturity_hint || "素材 " + ta.maturity + "%"}</span>`;
+    box.appendChild(m);
+  }
   for (const t of ta.tags || []) {
     const chip = document.createElement("span");
     chip.className = "tag-chip";
@@ -371,6 +381,7 @@ async function refreshSessionData() {
     renderSparks();
     renderDrafts();
     await loadSessions();
+    renderWeekStats();
   } catch (e) { /* 会话可能被删 */ }
 }
 
@@ -539,7 +550,10 @@ function buildDraftCard(d) {
   const reviseRow = document.createElement("div");
   reviseRow.className = "draft-revise-row";
   const reviseInput = document.createElement("input");
-  reviseInput.placeholder = "修改指令，例如：开头换个故事；压缩到一半长度…";
+  reviseInput.placeholder = "修改指令，例如：开头换个故事；压缩到一半长度…（Enter 执行）";
+  reviseInput.onkeydown = (e) => {
+    if (e.key === "Enter" && reviseInput.value.trim()) reviseBtn.click();
+  };
   const reviseBtn = document.createElement("button");
   reviseBtn.className = "btn btn-ghost btn-sm";
   reviseBtn.textContent = "改写";
@@ -626,6 +640,7 @@ async function generateDraft() {
       tone: $("#draftTone").value,
       length: $("#draftLength").value,
       extra: $("#draftExtra").value.trim(),
+      spark_ids: pickedSparkIds(),
     }, (ev) => {
       if (ev.t === "delta") {
         box.querySelector(".stream-text").textContent += ev.v;
@@ -714,6 +729,104 @@ function renderLightMd(text) {
   return out.join("<br>");
 }
 
+// ───────────────────────── 灵感库（全局） ─────────────────────────
+let libData = { sparks: [], total: 0 };
+
+async function loadLibrary() {
+  const q = $("#libSearch").value.trim();
+  libData = await apiJson(`/api/sparks/all${q ? `?q=${encodeURIComponent(q)}` : ""}`);
+  renderLibrary();
+}
+
+function renderLibrary() {
+  const cats = (state.config && state.config.topic_categories) || {};
+  const list = $("#libList");
+  $("#libTotal").textContent = `共 ${libData.total} 条`;
+  if (!libData.sparks.length) {
+    list.innerHTML = `<div class="tab-empty">${libData.total ? "没有匹配的灵感" : "灵感库还是空的<br>在各话题里收下 💡 后会汇总到这里"}</div>`;
+    return;
+  }
+  list.innerHTML = "";
+  for (const sp of libData.sparks) {
+    const card = document.createElement("div");
+    card.className = "spark-card lib-card";
+    const catChip = sp.category
+      ? `<span class="cat-mini" data-cat="${sp.category}">${cats[sp.category] || sp.category}</span>` : "";
+    card.innerHTML = `
+      <div class="lib-source" title="跳到该话题">${catChip}<span>📂 ${escapeHtml(sp.session_title)}</span></div>
+      <div class="spark-content">${escapeHtml(sp.text)}</div>
+      ${sp.note ? `<div class="spark-note">※ ${escapeHtml(sp.note)}</div>` : ""}`;
+    card.querySelector(".lib-source").onclick = () => openSession(sp.session_id);
+    list.appendChild(card);
+  }
+}
+
+// ───────────────────────── 灵感碰撞器 ─────────────────────────
+async function runCollide() {
+  const body = $("#collideBody");
+  $("#btnCollideAgain").hidden = true;
+  body.innerHTML = `<div class="collide-loading">从灵感库里随机抽几张卡片，找它们之间的隐秘关联…</div>`;
+  showModal("#modalCollide");
+  try {
+    const r = await apiJson("/api/sparks/collide", {
+      method: "POST", body: JSON.stringify({ count: 3 }),
+    });
+    const html = [`<div class="collide-picked">🎴 本次抽到：<br>${r.picked.map(p => "· " + escapeHtml(p)).join("<br>")}</div>`];
+    if (r.connections) {
+      html.push(`<div class="collide-conn">⚡ <b>隐秘关联：</b>${escapeHtml(r.connections)}</div>`);
+    }
+    for (const d of r.directions) {
+      html.push(`<div class="direction-card">
+        <h5>${escapeHtml(d.title)}</h5>
+        <div class="dir-why">${escapeHtml(d.why)}</div>
+        <div class="dir-hook">「${escapeHtml(d.hook)}」</div>
+        <button class="btn btn-primary" data-title="${escapeHtml(d.title)}" data-hook="${escapeHtml(d.hook)}">🚀 就聊这个</button>
+      </div>`);
+    }
+    body.innerHTML = html.join("");
+    body.querySelectorAll("[data-title]").forEach(btn => {
+      btn.onclick = () => startFromDirection(btn.dataset.title, btn.dataset.hook);
+    });
+    $("#btnCollideAgain").hidden = false;
+  } catch (e) {
+    body.innerHTML = `<div class="collide-loading" style="color:var(--danger)">${escapeHtml(e.message)}</div>`;
+    $("#btnCollideAgain").hidden = false;
+  }
+}
+
+async function startFromDirection(title, hook) {
+  try {
+    const s = await apiJson("/api/sessions", {
+      method: "POST",
+      body: JSON.stringify({ title, mode: "brainstorm", seed: hook }),
+    });
+    hideModal("#modalCollide");
+    await loadSessions();
+    await openSession(s.id);
+    toast("新话题已开，搭档先开了个头 ✍️");
+    $("#inputBox").focus();
+  } catch (e) { toast(e.message, true); }
+}
+
+// ───────────────────────── 本周写作统计 ─────────────────────────
+function renderWeekStats() {
+  const box = $("#weekStats");
+  const now = new Date();
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7));
+  const week = state.sessions.filter(s => (s.created_at || 0) * 1000 >= monday.getTime());
+  const chars = week.reduce((a, s) => a + (s.chars || 0), 0);
+  const sparks = state.sessions.reduce((a, s) => a + (s.spark_count || 0), 0);
+  const drafts = state.sessions.reduce((a, s) => a + (s.draft_count || 0), 0);
+  if (!state.sessions.length) { box.hidden = true; return; }
+  const stat = (b, label) => `<div class="stat"><b>${b}</b><span>${label}</span></div>`;
+  box.innerHTML =
+    stat(week.length, "本周新话题") +
+    stat(sparks, "累计灵感") +
+    stat(drafts, "累计文案") +
+    stat(chars >= 1000 ? (chars / 1000).toFixed(1) + "k" : chars, "本周产出字数");
+  box.hidden = false;
+}
+
 // ───────────────────────── 飞书 ─────────────────────────
 async function refreshFeishu() {
   if (!state.config) return;
@@ -758,12 +871,65 @@ async function feishuCheck() {
   finally { $("#btnFeishuCheck").disabled = false; }
 }
 
+// ───────────────────────── 素材精选（文案生成） ─────────────────────────
+function renderSparkPicker() {
+  const box = $("#sparkPicker");
+  const sparks = state.session ? state.session.sparks : [];
+  if (!sparks.length) {
+    box.hidden = true;
+    return;
+  }
+  const list = $("#pickerList");
+  list.innerHTML = "";
+  for (const sp of sparks) {
+    const label = document.createElement("label");
+    label.className = "picker-item";
+    label.innerHTML = `<input type="checkbox" value="${sp.id}" checked><span>${escapeHtml(sp.text)}</span>`;
+    list.appendChild(label);
+  }
+  box.hidden = false;
+}
+
+function pickedSparkIds() {
+  if ($("#sparkPicker").hidden) return null;  // 未显示 = 不筛选，用全部
+  return [...$("#pickerList input:checked")].map(i => i.value);
+}
+
+// ───────────────────────── 语音输入（浏览器支持才显示） ─────────────────────────
+let micRecognition = null;
+function setupMic() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return;  // 不支持则按钮保持隐藏
+  $("#btnMic").hidden = false;
+  const btn = $("#btnMic");
+  micRecognition = new SR();
+  micRecognition.lang = "zh-CN";
+  micRecognition.interimResults = false;
+  micRecognition.maxAlternatives = 1;
+  micRecognition.onresult = (e) => {
+    const text = e.results[0][0].transcript;
+    const box = $("#inputBox");
+    box.value = (box.value ? box.value + " " : "") + text;
+    box.focus();
+  };
+  micRecognition.onend = () => btn.classList.remove("recording");
+  micRecognition.onerror = () => { btn.classList.remove("recording"); toast("语音识别失败", true); };
+  btn.onclick = () => {
+    if (btn.classList.contains("recording")) {
+      micRecognition.stop();
+      return;
+    }
+    btn.classList.add("recording");
+    try { micRecognition.start(); } catch (e) { btn.classList.remove("recording"); }
+  };
+}
+
 // ───────────────────────── 弹窗通用 ─────────────────────────
 function showModal(sel) { $(sel).hidden = false; }
 function hideModal(sel) { $(sel).hidden = true; }
 
 // ───────────────────────── 设置 ─────────────────────────
-function openSettings() {
+async function openSettings() {
   const c = state.config;
   $("#cfgBaseUrl").value = c.llm.base_url;
   $("#cfgModel").value = c.llm.model;
@@ -776,6 +942,12 @@ function openSettings() {
   $("#cfgFsFolder").value = c.feishu.folder_token;
   $("#cfgFsSecret").value = ""; $("#cfgFsSecret").placeholder = c.feishu.enabled ? "已保存（不回显）" : "App Secret";
   showModal("#modalSettings");
+  // 写作画像（异步加载，不阻塞弹窗）
+  try {
+    const p = await apiJson("/api/profile");
+    $("#profileText").value = p.profile || "";
+    $("#profileText").placeholder = p.profile ? "" : "聊几轮后自动生成；也可点「立即更新」";
+  } catch (e) { /* 忽略 */ }
 }
 
 async function saveSettings() {
@@ -868,6 +1040,8 @@ async function init() {
   fillDraftOptions();
   renderModeCards();
   await loadSessions(true);
+  renderWeekStats();
+  setupMic();
 
   // ── 事件绑定 ──
   $("#btnNewTopic").onclick = () => showModal("#modalNew");
@@ -941,6 +1115,7 @@ async function init() {
     if (!state.session) { toast("先新建一个话题", true); return; }
     $("#draftComposer").hidden = !$("#draftComposer").hidden;
     renderRecRow();
+    renderSparkPicker();
   };
   $("#btnGenDraft").onclick = generateDraft;
 
@@ -954,8 +1129,32 @@ async function init() {
       tab.classList.add("active");
       $(`#tab-${tab.dataset.tab}`).classList.add("active");
       if (tab.dataset.tab === "feishu") refreshFeishu();
+      if (tab.dataset.tab === "library") loadLibrary();
     };
   });
+
+  // 灵感库 & 碰撞器
+  $("#libSearch").oninput = () => {
+    clearTimeout($("#libSearch")._timer);
+    $("#libSearch")._timer = setTimeout(loadLibrary, 350);
+  };
+  $("#btnCollide").onclick = runCollide;
+  $("#btnCollideAgain").onclick = runCollide;
+
+  // 素材精选全选/全不选
+  $("#pickerAll").onclick = () => $$("#pickerList input").forEach(i => (i.checked = true));
+  $("#pickerNone").onclick = () => $$("#pickerList input").forEach(i => (i.checked = false));
+
+  // 写作画像刷新
+  $("#btnProfileRefresh").onclick = async () => {
+    $("#btnProfileRefresh").disabled = true;
+    try {
+      const r = await apiJson("/api/profile/refresh", { method: "POST" });
+      $("#profileText").value = r.profile;
+      toast("写作画像已更新 ✍️");
+    } catch (e) { toast(e.message, true); }
+    finally { $("#btnProfileRefresh").disabled = false; }
+  };
 
   $$(".modal-mask").forEach((mask) => {
     mask.addEventListener("click", (e) => { if (e.target === mask) mask.hidden = true; });

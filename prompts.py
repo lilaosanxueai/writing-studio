@@ -26,17 +26,20 @@ MODE_HINTS = {
 }
 
 
-def partner_system_prompt(topic: str, mode: str, spark_lines: list) -> str:
+def partner_system_prompt(topic: str, mode: str, spark_lines: list, profile: str = "") -> str:
     sparks_note = ""
     if spark_lines:
         quoted = "；".join(spark_lines[-8:])
         sparks_note = f"\n\n已经收集到的灵感（避免重复提出，可围绕它们深化）：{quoted}\n"
+    profile_note = ""
+    if profile:
+        profile_note = f"\n\n你一路陪着这位写作者，对他的了解（自然运用，别复述）：{profile}\n"
     mode_hint = MODE_HINTS.get(mode, MODE_HINTS["free"])
     topic_line = f"正在讨论的话题：{topic}" if topic else "话题还没定，先陪用户把想聊的东西聊出来"
     return (
         "你是一位写作搭档，正和用户一起打磨想法、找灵感、攒素材。"
         "你不是老师，不是客服，不是百科问答机——是平视的创作伙伴，你们一起想办法把一个模糊的念头变成能写的东西。\n\n"
-        f"{topic_line}\n{mode_hint}{sparks_note}\n"
+        f"{topic_line}\n{mode_hint}{sparks_note}{profile_note}\n"
         "你的职责（互相激发、互相引领）：\n"
         "1. 顺着用户的话往深处走：他提到有意思的点没展开，就追问；说得太笼统，就要具体的例子。\n"
         "2. 主动贡献你自己的角度、联想、反例——但说清楚这是你的想法，供他取舍，别替他做结论。\n"
@@ -64,7 +67,9 @@ def summary_prompt() -> str:
     )
 
 
-def draft_system_prompt(fmt_label: str, tone: str, length: str, extra: str) -> str:
+def draft_system_prompt(fmt_label: str, tone: str, length: str, extra: str,
+                        profile: str = "") -> str:
+    profile_note = f"\n作者偏好（贴合他的表达习惯）：{profile}\n" if profile else ""
     return (
         "你是文案整理者。手上有用户和写作搭档的完整讨论记录、以及讨论中收集的灵感卡片。"
         f"任务：把这些真实材料整理成一篇「{fmt_label}」。\n\n"
@@ -73,7 +78,7 @@ def draft_system_prompt(fmt_label: str, tone: str, length: str, extra: str) -> s
         "讨论里没有的观点不要发明，缺素材的地方宁可留白也不要编。\n"
         "- 搭档的话只是引子，成稿里不出现「我们聊到」「你说过」这类对话痕迹，"
         "直接以成品文案的口吻写。\n\n"
-        f"语气：{tone}\n长度：{length}\n"
+        f"语气：{tone}\n长度：{length}\n{profile_note}"
         + (f"用户附加要求：{extra}\n" if extra else "")
         + f"\n按「{fmt_label}」的惯常结构组织，可直接使用。只输出成稿本身（可带标题），"
           "不要解释你做了什么，不要输出讨论过程。"
@@ -89,7 +94,7 @@ def title_prompt(first_exchange: str) -> str:
 
 
 def topic_analysis_prompt(categories: dict, formats: dict) -> str:
-    """话题自动分析：分类 + 关键词 + 一句话定位 + 推荐文案格式（严格 JSON 输出）"""
+    """话题自动分析：分类 + 关键词 + 定位 + 成熟度 + 推荐文案格式（严格 JSON 输出）"""
     cats = "；".join(f"{k}={v}" for k, v in categories.items())
     fmts = "；".join(f"{k}={v}" for k, v in formats.items())
     return (
@@ -97,11 +102,44 @@ def topic_analysis_prompt(categories: dict, formats: dict) -> str:
         "只输出一个 JSON 对象，不要任何解释、不要代码块标记：\n"
         '{"category": "分类key", "tags": ["关键词", "关键词"], '
         '"summary": "一句话说明这个话题真正在聊什么（30字以内）", '
+        '"maturity": 50, "maturity_hint": "还缺什么才能动笔（20字以内）", '
         '"recommended_formats": ["格式key"]}\n\n'
         f"category 只能从这些 key 里选一个：{cats}\n"
         "tags：3~5 个简短关键词，来自讨论内容本身。\n"
+        "maturity：素材成熟度 0~100。0=只有个模糊念头；30=有了观点但没例子；"
+        "60=观点和例子都有但结构未成形；80+=观点/例子/金句齐备，可以直接动笔。"
+        "maturity_hint：按缺失的最关键一项给建议，如「还缺一个具体场景」「缺反面观点」；"
+        "maturity>=80 时写「可以动笔了」。\n"
         f"recommended_formats：从素材特质看最适合整理成哪 1~2 种文案，只能从这些 key 里选：{fmts}\n\n"
         "讨论内容：\n"
+    )
+
+
+def collide_prompt(sparks_text: str) -> str:
+    """灵感碰撞器：旧灵感之间找隐秘关联 → 新话题方向"""
+    return (
+        "你是灵感碰撞器。下面是从一位写作者不同时期的灵感卡片里随机抽出的几条。"
+        "你的任务是在它们之间找隐秘的关联——共同的底层主题、能互相印证的观察、"
+        "放在一起会产生张力的观点。\n\n"
+        "只输出一个 JSON 对象，不要任何解释、不要代码块标记：\n"
+        '{"connections": "一两句话点破这几条灵感之间的隐秘关联", '
+        '"directions": [{"title": "话题方向名（12字以内）", '
+        '"why": "为什么值得写（30字以内，说清和这几条灵感的关系）", '
+        '"hook": "搭档的开场白（60字以内，直接抛出切入问题，口语）"}]}\n\n'
+        "directions 给 3 个，角度要彼此不同（比如一个偏叙事、一个偏观点、一个偏方法）。\n\n"
+        f"抽到的灵感卡片：\n{sparks_text}"
+    )
+
+
+def profile_prompt() -> str:
+    """写作画像：跨话题记住这位写作者的特点与偏好"""
+    return (
+        "你在为一位写作搭档（AI）维护一份「写作者画像」，让它下次接着聊时不用从零认识对方。"
+        "根据下面这位写作者最近的讨论发言，用第二人称（「你」指写作者）写一段 150 字以内的画像，"
+        "涵盖：常写的主题领域、表达习惯（长句/短句、爱用例子还是爱下判断）、"
+        "在讨论里最吃哪一套（喜欢被追问还是喜欢被质疑）、明显的素材偏好。\n"
+        "只写有证据的，没证据的不编。直接输出画像正文。\n\n"
+        "写作者最近的讨论材料：\n"
     )
 
 

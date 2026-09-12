@@ -85,7 +85,8 @@ class LLM:
                 if r.status_code != 200:
                     raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
                 data = r.json()
-                content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+                msg = (data.get("choices") or [{}])[0].get("message", {})
+                content = msg.get("content") or msg.get("reasoning_content") or ""
                 if content.strip():
                     return content.strip()
                 raise RuntimeError("空回复")

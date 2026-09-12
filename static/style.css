@@ -236,6 +236,90 @@ input, select, textarea { font-family: inherit; color: var(--ink); }
 }
 .rec-chip:hover { background: var(--gold); color: #fff; }
 
+/* ─────────── 灵感库 ─────────── */
+.lib-search { margin-bottom: 12px; }
+.lib-search input {
+  width: 100%; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--card); font-size: 13.5px; outline: none;
+}
+.lib-search input:focus { border-color: var(--accent); }
+.lib-card { position: relative; }
+.lib-source {
+  font-size: 11.5px; color: var(--ink-3); margin-bottom: 4px;
+  display: flex; align-items: center; gap: 6px; cursor: pointer;
+}
+.lib-source:hover { color: var(--accent); }
+.lib-source .cat-mini {
+  padding: 0 7px; border-radius: 8px; font-size: 10.5px; color: #fff; background: var(--ink-3);
+}
+.cat-mini[data-cat="opinion"] { background: #b3542e; }
+.cat-mini[data-cat="story"] { background: #4d7c5a; }
+.cat-mini[data-cat="idea"] { background: #b98a2f; }
+.cat-mini[data-cat="explainer"] { background: #3a6ea5; }
+.cat-mini[data-cat="fiction"] { background: #8250a8; }
+.cat-mini[data-cat="journal"] { background: #a8586b; }
+.cat-mini[data-cat="method"] { background: #5a7d6c; }
+
+/* ─────────── 成熟度进度条 ─────────── */
+.maturity { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.maturity-bar {
+  width: 54px; height: 7px; border-radius: 4px; background: var(--paper-2);
+  overflow: hidden; border: 1px solid var(--line);
+}
+.maturity-fill { height: 100%; background: var(--gold); border-radius: 4px; transition: width .4s; }
+.maturity.ready .maturity-fill { background: var(--green); }
+.maturity-text { font-size: 11.5px; color: var(--ink-3); }
+.maturity.ready .maturity-text { color: var(--green); font-weight: 600; }
+
+/* ─────────── 碰撞弹窗 ─────────── */
+.collide-loading { text-align: center; color: var(--ink-2); padding: 30px 0; font-size: 14px; }
+.collide-picked {
+  background: var(--gold-soft); border: 1px dashed #dcc27a; border-radius: 10px;
+  padding: 9px 13px; margin-bottom: 12px; font-size: 13px; color: #7a5d18; line-height: 1.7;
+}
+.collide-conn { font-size: 14px; margin-bottom: 14px; line-height: 1.7; }
+.collide-conn b { color: var(--accent); }
+.direction-card {
+  border: 1px solid var(--line); border-radius: 12px; padding: 13px 15px;
+  margin-bottom: 11px; background: var(--paper);
+}
+.direction-card h5 { font-size: 15px; margin-bottom: 5px; }
+.direction-card .dir-why { font-size: 12.5px; color: var(--ink-2); margin-bottom: 8px; line-height: 1.6; }
+.direction-card .dir-hook {
+  font-size: 13px; color: var(--ink-2); font-style: italic; margin-bottom: 10px;
+  border-left: 3px solid var(--gold); padding-left: 10px; line-height: 1.6;
+}
+.direction-card .btn { padding: 6px 16px; font-size: 13px; }
+
+/* ─────────── 素材精选 ─────────── */
+.spark-picker {
+  border: 1px solid var(--line); border-radius: 11px; padding: 10px 12px;
+  margin-bottom: 10px; background: var(--paper);
+}
+.picker-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.picker-head label { font-size: 12.5px; color: var(--ink-2); }
+.picker-list { max-height: 150px; overflow-y: auto; display: flex; flex-direction: column; gap: 5px; }
+.picker-item { display: flex; align-items: flex-start; gap: 7px; font-size: 13px; line-height: 1.5; }
+.picker-item input { accent-color: var(--accent); margin-top: 3px; flex-shrink: 0; }
+.picker-empty { font-size: 12.5px; color: var(--ink-3); }
+
+/* ─────────── 语音按钮 / 本周统计 / 画像 ─────────── */
+.btn-mic { height: 46px; font-size: 19px; padding: 0 12px; flex-shrink: 0; }
+.btn-mic.recording { background: var(--danger); border-color: var(--danger); color: #fff; animation: pulse 1.2s infinite; }
+@keyframes pulse { 50% { opacity: .6; } }
+.week-stats {
+  margin-top: 18px; display: flex; justify-content: center; gap: 22px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 12px 20px; flex-wrap: wrap;
+}
+.week-stats .stat { text-align: center; }
+.week-stats .stat b { display: block; font-size: 20px; font-family: "Noto Serif SC", serif; color: var(--accent); }
+.week-stats .stat span { font-size: 11.5px; color: var(--ink-3); }
+.profile-text {
+  width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+  font-size: 13px; line-height: 1.7; background: var(--paper); color: var(--ink-2); resize: vertical;
+}
+
 /* ─────────── 灵感卡片 ─────────── */
 .spark-list { display: flex; flex-direction: column; gap: 10px; }
 .spark-card {

@@ -127,7 +127,9 @@ def _sparks_text(s: dict) -> str:
 
 def _chat_messages(s: dict) -> list:
     sparks = [sp["text"] for sp in s.get("sparks", []) if sp.get("text")]
-    sys_prompt = prompts.partner_system_prompt(s.get("topic") or s["title"], s.get("mode", "free"), sparks)
+    profile = store.get_profile().get("text", "")
+    sys_prompt = prompts.partner_system_prompt(s.get("topic") or s["title"], s.get("mode", "free"),
+                                               sparks, profile)
     history = s.get("messages", [])
     # 近 40 轮、总字数 12000 以内
     msgs, budget = [], 12000
@@ -191,10 +193,16 @@ async def _analyze_topic(sid: str) -> dict | None:
             cat = data.get("category")
             if cat not in store.TOPIC_CATEGORIES:
                 cat = "other"
+            try:
+                maturity = max(0, min(100, int(data.get("maturity", 0))))
+            except (TypeError, ValueError):
+                maturity = 0
             analysis = {
                 "category": cat,
                 "tags": [str(t).strip()[:12] for t in (data.get("tags") or []) if str(t).strip()][:5],
                 "summary": str(data.get("summary", "")).strip()[:60],
+                "maturity": maturity,
+                "maturity_hint": str(data.get("maturity_hint", "")).strip()[:40],
                 "recommended_formats": [f for f in (data.get("recommended_formats") or [])
                                         if f in prompts.DRAFT_FORMATS][:2],
                 "analyzed_turns": sum(1 for m in s["messages"] if m["role"] == "user"),
@@ -207,6 +215,51 @@ async def _analyze_topic(sid: str) -> dict | None:
         except Exception as e:
             log.warning("话题分析失败: %s", e)
             return None
+
+
+async def _refresh_profile() -> str | None:
+    """写作画像：用最近活跃会话的讨论材料更新跨话题记忆；失败静默"""
+    try:
+        materials = []
+        for meta in store.list_sessions()[:2]:
+            s = store.load_session(meta["id"])
+            if s and s.get("messages"):
+                materials.append(f"【话题：{s['title']}】\n{_transcript(s, 4000)}")
+        if not materials:
+            return None
+        raw = await llm.chat_once(
+            [{"role": "user", "content": prompts.profile_prompt() + "\n\n".join(materials)}],
+            model=llm.fast_model, max_tokens=400, temperature=0.4, thinking=False,
+        )
+        text = raw.strip()
+        if len(text) < 20:
+            raise RuntimeError("画像过短")
+        store.save_profile(text, store.get_total_user_turns())
+        log.info("写作画像已更新（%d 字）", len(text))
+        return text
+    except Exception as e:
+        log.warning("画像更新失败: %s", e)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# 灵感库 & 灵感碰撞
+# ---------------------------------------------------------------------------
+def _all_sparks() -> list:
+    """跨话题汇总所有灵感卡片（新→旧）"""
+    out = []
+    for meta in store.list_sessions():
+        s = store.load_session(meta["id"])
+        if not s:
+            continue
+        for sp in s.get("sparks", []):
+            out.append({
+                **sp,
+                "session_id": s["id"],
+                "session_title": s["title"],
+                "category": (s.get("topic_analysis") or {}).get("category", ""),
+            })
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -370,11 +423,16 @@ def sessions_list():
 class SessionCreate(BaseModel):
     title: str = ""
     mode: str = "free"
+    seed: str = ""   # 搭档开场白（灵感碰撞「开聊」用），作为首条 assistant 消息注入
 
 
 @app.post("/api/sessions")
 def session_create(body: SessionCreate):
     s = store.new_session(body.title, body.mode)
+    if body.seed.strip():
+        s["messages"].append({"role": "assistant", "content": body.seed.strip()[:600],
+                              "ts": store.now_ts()})
+        store.save_session(s)
     return s
 
 
@@ -486,6 +544,14 @@ async def chat(sid: str, body: ChatBody):
                 _bg_tasks.add(t2)
                 t2.add_done_callback(_bg_tasks.discard)
 
+            # 写作画像：全局累计每 +6 轮用户发言，后台静默更新
+            total = store.bump_total_user_turns()
+            last = store.get_profile().get("total_turns", 0)
+            if total - last >= 6:
+                t3 = asyncio.create_task(_refresh_profile())
+                _bg_tasks.add(t3)
+                t3.add_done_callback(_bg_tasks.discard)
+
             yield _sse({"t": "done", "title": s["title"] if title_changed else None,
                         "syncing": True})
 
@@ -539,6 +605,11 @@ async def spark_add(sid: str, body: SparkBody):
               "note": body.note.strip(), "origin": body.origin, "ts": store.now_ts()}
         if not sp["text"]:
             raise HTTPException(400, "灵感内容为空")
+        # 查重：同话题内前 16 字相同视为重复
+        head = sp["text"][:16]
+        for old in s.get("sparks", []):
+            if old["text"][:16] == head:
+                raise HTTPException(409, f"已有相似灵感：「{old['text'][:24]}…」")
         s.setdefault("sparks", []).append(sp)
         f = s.setdefault("feishu", {})
         if f.get("doc_id") and (fs.enabled and fs.auto_record or MOCK):
@@ -581,6 +652,81 @@ def spark_delete(sid: str, spid: str):
 
 
 # ---------------------------------------------------------------------------
+# 灵感库（全局） & 灵感碰撞器 & 写作画像
+# ---------------------------------------------------------------------------
+@app.get("/api/sparks/all")
+def sparks_library(q: str = "", category: str = ""):
+    """跨话题灵感库，支持关键词过滤与分类过滤"""
+    q = q.strip().lower()
+    out = []
+    for sp in _all_sparks():
+        if q and q not in sp["text"].lower() and q not in sp.get("session_title", "").lower():
+            continue
+        if category and sp.get("category") != category:
+            continue
+        out.append(sp)
+    return {"sparks": out, "total": len(_all_sparks())}
+
+
+class CollideBody(BaseModel):
+    count: int = 3   # 抽几条灵感参与碰撞
+
+
+@app.post("/api/sparks/collide")
+async def sparks_collide(body: CollideBody):
+    """灵感碰撞器：随机抽旧灵感 → 找隐秘关联 → 3 个新话题方向"""
+    import random
+    pool = _all_sparks()
+    if len(pool) < 2:
+        raise HTTPException(400, "灵感还太少（至少 2 条），先去攒点灵感再来碰撞")
+    n = max(2, min(body.count or 3, min(5, len(pool))))
+    picked = random.sample(pool, n)
+    sparks_text = "\n".join(f"- {sp['text']}（来自话题「{sp['session_title']}」）" for sp in picked)
+    try:
+        raw = await llm.chat_once(
+            [{"role": "user", "content": prompts.collide_prompt(sparks_text)}],
+            model=llm.draft_model, max_tokens=800, temperature=0.9, thinking=False,
+        )
+        data = _extract_json(raw)
+        dirs = data.get("directions") or []
+        if not dirs:
+            raise RuntimeError(f"无法解析: {raw[:80]}")
+        out_dirs = []
+        for d in dirs[:3]:
+            if not isinstance(d, dict) or not d.get("title"):
+                continue
+            out_dirs.append({
+                "title": str(d["title"]).strip()[:20],
+                "why": str(d.get("why", "")).strip()[:60],
+                "hook": str(d.get("hook", "")).strip()[:120],
+            })
+        if not out_dirs:
+            raise RuntimeError("方向解析为空")
+        return {"connections": str(data.get("connections", "")).strip()[:120],
+                "directions": out_dirs,
+                "picked": [sp["text"] for sp in picked]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"碰撞失败: {e}")
+
+
+@app.get("/api/profile")
+def profile_get():
+    p = store.get_profile()
+    return {"profile": p.get("text", ""), "updated_at": p.get("ts", 0),
+            "total_turns": store.get_total_user_turns()}
+
+
+@app.post("/api/profile/refresh")
+async def profile_refresh():
+    text = await _refresh_profile()
+    if not text:
+        raise HTTPException(502, "画像更新失败（先聊几轮再来）")
+    return {"profile": text}
+
+
+# ---------------------------------------------------------------------------
 # 文案工坊
 # ---------------------------------------------------------------------------
 class DraftBody(BaseModel):
@@ -588,20 +734,36 @@ class DraftBody(BaseModel):
     tone: str = "casual"
     length: str = "medium"
     extra: str = ""
+    spark_ids: Optional[list] = None   # None=全部灵感；[]=不用；[...]=只勾选的
 
 
-def _draft_material(s: dict, fmt: str, tone: str, length: str, extra: str) -> list:
+def _selected_sparks_text(s: dict, spark_ids) -> str:
+    """按勾选过滤灵感（素材精选）；spark_ids 为 None 时用全部"""
+    items = [sp["text"] for sp in s.get("sparks", []) if sp.get("text")]
+    if spark_ids is not None:
+        idset = set(spark_ids)
+        items = [sp["text"] for sp in s.get("sparks", [])
+                 if sp.get("id") in idset and sp.get("text")]
+    return "\n".join(f"- {t}" for t in items) or "（暂无）"
+
+
+def _draft_material(s: dict, fmt: str, tone: str, length: str, extra: str,
+                    spark_ids=None) -> list:
     fmt_label = prompts.DRAFT_FORMATS.get(fmt, fmt)
+    profile = store.get_profile().get("text", "")
+    sparks_part = _selected_sparks_text(s, spark_ids)
     return [
         {"role": "system", "content": prompts.draft_system_prompt(
             fmt_label,
             prompts.DRAFT_TONES.get(tone, "口语随和"),
             prompts.DRAFT_LENGTHS.get(length, "中等长度"),
             extra,
+            profile,
         )},
         {"role": "user", "content": (
-            f"【讨论记录】\n{_transcript(s)}\n\n【灵感卡片】\n{_sparks_text(s)}\n\n"
-            "请基于以上材料开始整理成稿。"
+            f"【讨论记录】\n{_transcript(s)}\n\n【灵感卡片】\n{sparks_part}\n\n"
+            + ("【要求】灵感卡片是本次成稿的精选素材，尽量都用上。\n\n" if sparks_part != "（暂无）" else "")
+            + "请基于以上材料开始整理成稿。"
         )},
     ]
 
@@ -618,12 +780,14 @@ async def draft_create(sid: str, body: DraftBody):
             draft = {
                 "id": store.new_id(), "format": body.format, "tone": body.tone,
                 "length": body.length, "instruction": body.extra, "content": "",
+                "spark_ids": body.spark_ids,
                 "created_at": store.now_ts(), "updated_at": store.now_ts(), "history": [],
             }
             full = ""
             try:
                 async for piece in llm.chat_stream(
-                    _draft_material(s, body.format, body.tone, body.length, body.extra),
+                    _draft_material(s, body.format, body.tone, body.length, body.extra,
+                                    body.spark_ids),
                     model=llm.draft_model, max_tokens=4096,
                 ):
                     full += piece
@@ -663,6 +827,7 @@ async def draft_revise(sid: str, did: str, body: ReviseBody):
                     prompts.DRAFT_TONES.get(d["tone"], "口语随和"),
                     prompts.DRAFT_LENGTHS.get(d["length"], "中等长度"),
                     "",
+                    store.get_profile().get("text", ""),
                 )},
                 {"role": "user", "content": (
                     "【讨论材料】\n" + _transcript(s, 8000) + "\n【灵感卡片】\n" + _sparks_text(s)
