@@ -510,7 +510,35 @@ function fillDraftOptions() {
   fill($("#draftFormat"), state.config.draft_formats);
   fill($("#draftTone"), state.config.draft_tones);
   fill($("#draftLength"), state.config.draft_lengths);
-  if (state.config.draft_styles) fill($("#draftStyle"), state.config.draft_styles);
+  // 风格下拉：带分组时用 optgroup（通用 / 图文博主 / 视频博主）
+  const styleSel = $("#draftStyle");
+  const groups = state.config.draft_style_groups;
+  if (styleSel) {
+    styleSel.innerHTML = "";
+    if (groups) {
+      for (const [gname, keys] of Object.entries(groups)) {
+        const og = document.createElement("optgroup");
+        og.label = gname;
+        for (const k of keys) {
+          if (!state.config.draft_styles[k]) continue;
+          const o = document.createElement("option");
+          o.value = k; o.textContent = state.config.draft_styles[k];
+          og.appendChild(o);
+        }
+        if (og.children.length) styleSel.appendChild(og);
+      }
+      // 分组没覆盖到的兜底
+      for (const [k, v] of Object.entries(state.config.draft_styles || {})) {
+        if (!styleSel.querySelector(`option[value="${k}"]`)) {
+          const o = document.createElement("option");
+          o.value = k; o.textContent = v;
+          styleSel.appendChild(o);
+        }
+      }
+    } else if (state.config.draft_styles) {
+      fill(styleSel, state.config.draft_styles);
+    }
+  }
 }
 
 function renderDrafts() {

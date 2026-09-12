@@ -386,6 +386,7 @@ def get_config():
         "draft_tones": prompts.DRAFT_TONES,
         "draft_lengths": prompts.DRAFT_LENGTHS,
         "draft_styles": prompts.DRAFT_STYLES,
+        "draft_style_groups": prompts.DRAFT_STYLE_GROUPS,
     }
 
 
