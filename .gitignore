@@ -1,0 +1,12 @@
+# 本机配置（含 API key / 飞书 App Secret，切勿提交）
+config.json
+
+# 运行数据与日志
+data/
+server.log
+gui-test-screenshots/
+
+# Python
+__pycache__/
+*.pyc
+.venv/

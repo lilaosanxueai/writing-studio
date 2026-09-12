@@ -1,0 +1,23 @@
+{
+  "llm": {
+    "api_key": "",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-flash",
+    "fast_model": "deepseek-flash",
+    "draft_model": "deepseek-v4-pro",
+    "backup_api_key": "",
+    "backup_base_url": "",
+    "backup_model": ""
+  },
+  "feishu": {
+    "app_id": "",
+    "app_secret": "",
+    "folder_token": "",
+    "auto_share_tenant": true,
+    "auto_record": true
+  },
+  "server": {
+    "lan": false,
+    "access_token": ""
+  }
+}

@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>✍️ 写作共创坊</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">✍️</span>
+    <div class="brand-text">
+      <h1>写作共创坊</h1>
+      <p>聊出来，再写出来</p>
+    </div>
+  </div>
+  <div class="topbar-actions">
+    <select id="sessionSelect" title="切换话题"></select>
+    <button id="btnNewTopic" class="btn btn-primary">＋ 新话题</button>
+    <button id="btnSettings" class="btn btn-ghost" title="设置">⚙</button>
+  </div>
+</header>
+
+<main class="layout">
+
+  <!-- ═══════════ 左：讨论区 ═══════════ -->
+  <section class="chat-pane">
+    <div class="topic-bar">
+      <div class="topic-info">
+        <span id="topicTitle" class="topic-title" title="点击改名">（选择或新建一个话题）</span>
+        <button id="btnDeleteSession" class="icon-btn" title="删除话题">🗑</button>
+      </div>
+      <div class="topic-controls">
+        <label class="mode-label">模式</label>
+        <select id="modeSelect"></select>
+        <button id="btnSummary" class="btn btn-ghost">📌 小结</button>
+      </div>
+    </div>
+
+    <div id="chatScroll" class="chat-scroll">
+      <div id="chatEmpty" class="chat-empty">
+        <div class="empty-art">🖋️</div>
+        <h3>从一个念头开始</h3>
+        <p>丢进来一个话题、一句牢骚、一个模糊的想法——<br>搭档会陪你把它聊成能写的东西。</p>
+        <div class="empty-suggestions">
+          <button class="chip-suggest" data-fill="我最近想写一篇关于「为什么人越来越不想社交」的东西，但只有个模糊感觉">想写「为什么人越来越不想社交」</button>
+          <button class="chip-suggest" data-fill="帮我把「AI 时代还要不要学写作」这个话题聊透，我想写篇公众号">聊透「AI 时代还要不要学写作」</button>
+          <button class="chip-suggest" data-fill="我脑子里有个产品点子，但说不清楚，帮我一起捋捋">捋一捋说不清的点子</button>
+        </div>
+      </div>
+      <div id="chatList" class="chat-list"></div>
+    </div>
+
+    <div class="composer">
+      <div class="quick-actions">
+        <button class="chip" data-fill="从另一个角度再聊聊这个，给点我没想过的方向">🔄 换个角度</button>
+        <button class="chip" data-fill="挑挑我刚才这个想法的毛病，哪里站不住？">🥊 挑战我</button>
+        <button class="chip" data-fill="帮我把目前聊到的线索梳理一下，我们走到了哪">🧵 梳理一下</button>
+        <button class="chip" data-fill="到目前为止，哪些点你觉得最值得写进成稿？">💎 挑出金子</button>
+      </div>
+      <div class="composer-row">
+        <textarea id="inputBox" rows="3" placeholder="说说你的想法…（Enter 发送，Shift+Enter 换行）"></textarea>
+        <button id="btnSend" class="btn btn-primary btn-send">发送</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════ 右：灵感 / 文案 / 飞书 ═══════════ -->
+  <aside class="side-pane">
+    <nav class="tabs">
+      <button class="tab active" data-tab="sparks">💡 灵感<span id="sparkBadge" class="badge" hidden>0</span></button>
+      <button class="tab" data-tab="drafts">✍️ 文案<span id="draftBadge" class="badge" hidden>0</span></button>
+      <button class="tab" data-tab="feishu">📘 飞书</button>
+    </nav>
+
+    <!-- 灵感 -->
+    <div id="tab-sparks" class="tab-body active">
+      <div class="tab-head">
+        <p class="tab-hint">讨论中冒出的金子：消息旁 ⭐ 收藏、💡 行一键收下</p>
+        <button id="btnAddSpark" class="btn btn-ghost btn-sm">＋ 手动记</button>
+      </div>
+      <div id="sparkList" class="spark-list">
+        <div class="tab-empty">还没有灵感<br>聊起来之后，好句子会出现在这里</div>
+      </div>
+    </div>
+
+    <!-- 文案 -->
+    <div id="tab-drafts" class="tab-body">
+      <div class="tab-head">
+        <p class="tab-hint">从讨论材料整理成可直接用的成稿</p>
+        <button id="btnNewDraft" class="btn btn-primary btn-sm">＋ 生成文案</button>
+      </div>
+      <div id="draftComposer" class="draft-composer" hidden>
+        <div class="field">
+          <label>格式</label>
+          <select id="draftFormat"></select>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>语气</label>
+            <select id="draftTone"></select>
+          </div>
+          <div class="field">
+            <label>长度</label>
+            <select id="draftLength"></select>
+          </div>
+        </div>
+        <div class="field">
+          <label>附加要求（可选）</label>
+          <textarea id="draftExtra" rows="2" placeholder="例如：开头用一个故事；面向新手读者"></textarea>
+        </div>
+        <button id="btnGenDraft" class="btn btn-primary btn-block">开始整理成稿</button>
+      </div>
+      <div id="draftList" class="draft-list">
+        <div class="tab-empty">还没有文案<br>聊出素材后点「生成文案」</div>
+      </div>
+    </div>
+
+    <!-- 飞书 -->
+    <div id="tab-feishu" class="tab-body">
+      <div class="tab-head">
+        <p class="tab-hint">讨论与文案的云端记录</p>
+        <label class="switch">
+          <input type="checkbox" id="autoRecordToggle">
+          <span>实时记录</span>
+        </label>
+      </div>
+      <div class="feishu-card" id="feishuCard">
+        <div class="feishu-line" id="feishuState">…</div>
+        <a id="feishuDocLink" class="feishu-link" target="_blank" hidden></a>
+        <div class="feishu-meta" id="feishuMeta" hidden></div>
+        <div class="feishu-err" id="feishuErr" hidden></div>
+        <div class="feishu-actions">
+          <button id="btnFeishuSync" class="btn btn-ghost btn-sm">🔄 补同步</button>
+          <button id="btnFeishuCheck" class="btn btn-ghost btn-sm">🔌 自检</button>
+        </div>
+      </div>
+      <p class="tab-hint small">文档建在飞书「✍️ 写作共创坊」文件夹；凭据在 ⚙ 设置里配置。</p>
+    </div>
+  </aside>
+</main>
+
+<!-- ═══════════ 新话题弹窗 ═══════════ -->
+<div id="modalNew" class="modal-mask" hidden>
+  <div class="modal">
+    <h3>新话题</h3>
+    <div class="field">
+      <label>话题（可留空，聊一句后自动命名）</label>
+      <input id="newTopicTitle" placeholder="例如：为什么人越来越不想社交">
+    </div>
+    <div class="field">
+      <label>讨论模式</label>
+      <div id="modeCards" class="mode-cards"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" data-close>取消</button>
+      <button id="btnCreateTopic" class="btn btn-primary">开始讨论</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ 灵感编辑弹窗 ═══════════ -->
+<div id="modalSpark" class="modal-mask" hidden>
+  <div class="modal">
+    <h3 id="sparkModalTitle">记一条灵感</h3>
+    <div class="field">
+      <label>内容</label>
+      <textarea id="sparkText" rows="4"></textarea>
+    </div>
+    <div class="field">
+      <label>备注（可选）</label>
+      <input id="sparkNote" placeholder="例如：可以用在开头">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" data-close>取消</button>
+      <button id="btnSaveSpark" class="btn btn-primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ 小结弹窗 ═══════════ -->
+<div id="modalSummary" class="modal-mask" hidden>
+  <div class="modal modal-wide">
+    <h3>📌 讨论小结</h3>
+    <div id="summaryBody" class="summary-body">生成中…</div>
+    <div class="modal-actions">
+      <button id="btnCopySummary" class="btn btn-ghost">复制</button>
+      <button class="btn btn-primary" data-close>关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ 设置弹窗 ═══════════ -->
+<div id="modalSettings" class="modal-mask" hidden>
+  <div class="modal modal-wide">
+    <h3>设置</h3>
+    <div class="settings-sections">
+      <section>
+        <h4>大模型</h4>
+        <div class="field-row">
+          <div class="field"><label>接口地址</label><input id="cfgBaseUrl"></div>
+          <div class="field"><label>API Key</label><input id="cfgApiKey" type="password" placeholder="已保存（不回显）"></div>
+        </div>
+        <div class="field-row">
+          <div class="field"><label>聊天模型</label><input id="cfgModel"></div>
+          <div class="field"><label>文案模型</label><input id="cfgDraftModel"></div>
+        </div>
+        <div class="field-row">
+          <div class="field"><label>备用接口</label><input id="cfgBackupUrl"></div>
+          <div class="field"><label>备用 Key / 模型</label>
+            <input id="cfgBackupKey" type="password" placeholder="已保存（不回显）">
+            <input id="cfgBackupModel" placeholder="备用模型名">
+          </div>
+        </div>
+      </section>
+      <section>
+        <h4>飞书云文档</h4>
+        <div class="field-row">
+          <div class="field"><label>App ID</label><input id="cfgFsAppId"></div>
+          <div class="field"><label>App Secret</label><input id="cfgFsSecret" type="password" placeholder="已保存（不回显）"></div>
+        </div>
+        <div class="field">
+          <label>文件夹 token（留空 = 自动建「✍️ 写作共创坊」）</label>
+          <input id="cfgFsFolder" placeholder="fld… 或文件夹链接">
+        </div>
+      </section>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" data-close>取消</button>
+      <button id="btnSaveSettings" class="btn btn-primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
