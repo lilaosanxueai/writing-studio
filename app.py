@@ -759,6 +759,7 @@ def _draft_material(s: dict, fmt: str, tone: str, length: str, extra: str,
             prompts.DRAFT_LENGTHS.get(length, "中等长度"),
             extra,
             profile,
+            fmt,
         )},
         {"role": "user", "content": (
             f"【讨论记录】\n{_transcript(s)}\n\n【灵感卡片】\n{sparks_part}\n\n"
@@ -828,6 +829,7 @@ async def draft_revise(sid: str, did: str, body: ReviseBody):
                     prompts.DRAFT_LENGTHS.get(d["length"], "中等长度"),
                     "",
                     store.get_profile().get("text", ""),
+                    d["format"],
                 )},
                 {"role": "user", "content": (
                     "【讨论材料】\n" + _transcript(s, 8000) + "\n【灵感卡片】\n" + _sparks_text(s)
@@ -848,6 +850,47 @@ async def draft_revise(sid: str, did: str, body: ReviseBody):
                 return
             d["history"].append(d["content"])
             d["content"] = full.strip()
+            d["updated_at"] = store.now_ts()
+            store.save_session(s)
+            yield _sse({"t": "done", "draft": d})
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.post("/api/sessions/{sid}/drafts/{did}/polish")
+async def draft_polish(sid: str, did: str):
+    """打磨：编辑红笔二遍稿（砍 AI 味、抽象换画面、锻金句、禁升华结尾）"""
+    async def gen():
+        async with _lock(sid):
+            s = _get_session(sid)
+            d = next((x for x in s.get("drafts", []) if x["id"] == did), None)
+            if not d:
+                yield _sse({"t": "error", "v": "文案不存在"})
+                return
+            msgs = [
+                {"role": "system", "content": prompts.polish_prompt()},
+                {"role": "user", "content": (
+                    "【讨论材料（事实边界，不得新增）】\n" + _transcript(s, 6000)
+                    + "\n【灵感卡片】\n" + _sparks_text(s)
+                    + "\n\n【待打磨的原稿】\n" + d["content"]
+                    + "\n\n请输出打磨后的完整修订稿。"
+                )},
+            ]
+            full = ""
+            try:
+                async for piece in llm.chat_stream(msgs, model=llm.draft_model, max_tokens=4096):
+                    full += piece
+                    yield _sse({"t": "delta", "v": piece})
+                if not full.strip():
+                    raise RuntimeError("空回复")
+            except Exception as e:
+                log.error("打磨失败: %s", e)
+                yield _sse({"t": "error", "v": str(e)[:300]})
+                return
+            d["history"].append(d["content"])
+            d["content"] = full.strip()
+            d["polished"] = True
             d["updated_at"] = store.now_ts()
             store.save_session(s)
             yield _sse({"t": "done", "draft": d})

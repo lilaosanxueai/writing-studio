@@ -41,9 +41,13 @@ class LLM:
     def update(self, cfg: dict):
         self.__init__(cfg)
 
-    def _providers(self):
-        """候选顺序：主 → 备"""
-        ps = [(self.base_url, self.api_key, self.model)]
+    def _providers(self, model=None):
+        """候选顺序：指定模型（若不同于默认）→ 默认模型 → 备用库。
+        指定模型余额不足/不可用时自动降级，不整次失败。"""
+        ps = []
+        if model and model != self.model and model != self.backup_model:
+            ps.append((self.base_url, self.api_key, model))
+        ps.append((self.base_url, self.api_key, self.model))
         if self.backup_ready:
             ps.append((self.backup_base_url, self.backup_api_key, self.backup_model))
         return ps
@@ -71,15 +75,11 @@ class LLM:
         if MOCK:
             return _MOCK_REPLY
         last_err = None
-        for base, key, mdl in self._providers():
+        for base, key, mdl in self._providers(model):
             try:
-                use_model = model or mdl
-                # 指定了主库特有模型名而当前是备用库时，用备用库自己的模型
-                if model and mdl != model:
-                    use_model = mdl
                 r = await self.http.post(
                     f"{base}/chat/completions",
-                    json=self._body(messages, use_model, False, temperature, max_tokens, thinking),
+                    json=self._body(messages, mdl, False, temperature, max_tokens, thinking),
                     headers=self._headers(key),
                 )
                 if r.status_code != 200:
@@ -102,13 +102,12 @@ class LLM:
             yield _MOCK_REPLY
             return
         last_err = None
-        for base, key, mdl in self._providers():
+        for base, key, mdl in self._providers(model):
             try:
-                use_model = model or mdl
                 async with self.http.stream(
                     "POST",
                     f"{base}/chat/completions",
-                    json=self._body(messages, use_model, True, temperature, max_tokens, thinking),
+                    json=self._body(messages, mdl, True, temperature, max_tokens, thinking),
                     headers=self._headers(key),
                 ) as r:
                     if r.status_code != 200:

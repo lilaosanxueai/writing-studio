@@ -597,6 +597,9 @@ function buildDraftCard(d) {
     a.click();
     URL.revokeObjectURL(a.href);
   });
+  mkBtn("💎 打磨", async () => {
+    await polishDraft(d.id, card);
+  });
   mkBtn("📘 存进话题文档", async (e) => {
     await sendDraftToFeishu(d.id, false);
   });
@@ -652,7 +655,13 @@ async function generateDraft() {
     $("#draftComposer").hidden = true;
     $("#draftExtra").value = "";
     await refreshSessionData();
-    toast("文案已生成 ✍️");
+    // 自动打磨：编辑二遍稿
+    if ($("#autoPolish").checked && state.session.drafts.length) {
+      const newest = state.session.drafts[0];
+      await polishDraft(newest.id);
+    } else {
+      toast("文案已生成 ✍️");
+    }
   } catch (e) {
     toast("生成失败：" + e.message, true);
   } finally {
@@ -700,6 +709,32 @@ async function sendDraftToFeishu(did, separate) {
     if (r.url) window.open(r.url, "_blank");
   } catch (e) {
     toast(e.message, true);
+  }
+}
+
+// 打磨：编辑红笔二遍稿（流式替换内容）
+async function polishDraft(did, cardEl = null) {
+  if (state.draftBusy) return;
+  state.draftBusy = true;
+  const box = buildStreamBox("💎 编辑打磨中（去 AI 味 · 锻金句）");
+  const body = cardEl ? cardEl.querySelector(".draft-card-body") : $("#draftList");
+  body.prepend(box);
+  try {
+    await sseFetch(`/api/sessions/${state.session.id}/drafts/${did}/polish`, {}, (ev) => {
+      if (ev.t === "delta") {
+        box.querySelector(".stream-text").textContent += ev.v;
+        box.scrollTop = box.scrollHeight;
+      } else if (ev.t === "error") {
+        throw new Error(ev.v);
+      }
+    });
+    await refreshSessionData();
+    toast("打磨完成 💎");
+  } catch (e) {
+    toast("打磨失败：" + e.message, true);
+  } finally {
+    box.remove();
+    state.draftBusy = false;
   }
 }
 
