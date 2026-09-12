@@ -574,7 +574,7 @@ async def summary(sid: str):
                     {"role": "system", "content": prompts.summary_prompt()},
                     {"role": "user", "content": _transcript(s)},
                 ],
-                model=llm.draft_model, max_tokens=2048, thinking=True,
+                model=llm.draft_model, max_tokens=2048, thinking=False,
             )
         except Exception as e:
             raise HTTPException(502, f"小结生成失败: {e}")

@@ -76,6 +76,8 @@ python app.py            # → http://127.0.0.1:8320
 ```
 
 - `server.lan: true` 开局域网访问（手机可用），自动生成访问令牌打印在控制台
+- **智谱 Coding Plan 用户**：`base_url` 填 `https://open.bigmodel.cn/api/coding/paas/v4`（注意是 `/coding/` 路径），模型用 `glm-5.3`（文案）/ `glm-5.3-flash`（聊天），订阅额度内畅用
+- 模型自动降级：指定的文案模型失败时依次回退到默认模型 → 备用接口，不会整次失败
 - 联调不碰外网：`WS_MOCK=1 python app.py`
 
 ## 目录结构

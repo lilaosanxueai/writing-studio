@@ -86,10 +86,10 @@ class LLM:
                     raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
                 data = r.json()
                 msg = (data.get("choices") or [{}])[0].get("message", {})
-                content = msg.get("content") or msg.get("reasoning_content") or ""
+                content = msg.get("content") or ""
                 if content.strip():
                     return content.strip()
-                raise RuntimeError("空回复")
+                raise RuntimeError("空回复（注意：GLM/DeepSeek 开思考时可能只有 reasoning 没有 content）")
             except Exception as e:
                 last_err = e
                 log.warning("模型调用失败(%s): %s", mdl, e)
