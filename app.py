@@ -385,6 +385,7 @@ def get_config():
         "draft_formats": prompts.DRAFT_FORMATS,
         "draft_tones": prompts.DRAFT_TONES,
         "draft_lengths": prompts.DRAFT_LENGTHS,
+        "draft_styles": prompts.DRAFT_STYLES,
     }
 
 
@@ -733,6 +734,8 @@ class DraftBody(BaseModel):
     format: str = "wechat"
     tone: str = "casual"
     length: str = "medium"
+    style: str = "none"
+    style_custom: str = ""
     extra: str = ""
     spark_ids: Optional[list] = None   # None=全部灵感；[]=不用；[...]=只勾选的
 
@@ -748,7 +751,7 @@ def _selected_sparks_text(s: dict, spark_ids) -> str:
 
 
 def _draft_material(s: dict, fmt: str, tone: str, length: str, extra: str,
-                    spark_ids=None) -> list:
+                    spark_ids=None, style: str = "none", style_custom: str = "") -> list:
     fmt_label = prompts.DRAFT_FORMATS.get(fmt, fmt)
     profile = store.get_profile().get("text", "")
     sparks_part = _selected_sparks_text(s, spark_ids)
@@ -760,6 +763,8 @@ def _draft_material(s: dict, fmt: str, tone: str, length: str, extra: str,
             extra,
             profile,
             fmt,
+            style,
+            style_custom,
         )},
         {"role": "user", "content": (
             f"【讨论记录】\n{_transcript(s)}\n\n【灵感卡片】\n{sparks_part}\n\n"
@@ -780,15 +785,15 @@ async def draft_create(sid: str, body: DraftBody):
             fmt_label = prompts.DRAFT_FORMATS.get(body.format, body.format)
             draft = {
                 "id": store.new_id(), "format": body.format, "tone": body.tone,
-                "length": body.length, "instruction": body.extra, "content": "",
-                "spark_ids": body.spark_ids,
+                "length": body.length, "style": body.style, "instruction": body.extra,
+                "content": "", "spark_ids": body.spark_ids,
                 "created_at": store.now_ts(), "updated_at": store.now_ts(), "history": [],
             }
             full = ""
             try:
                 async for piece in llm.chat_stream(
                     _draft_material(s, body.format, body.tone, body.length, body.extra,
-                                    body.spark_ids),
+                                    body.spark_ids, body.style, body.style_custom),
                     model=llm.draft_model, max_tokens=4096,
                 ):
                     full += piece
@@ -830,6 +835,7 @@ async def draft_revise(sid: str, did: str, body: ReviseBody):
                     "",
                     store.get_profile().get("text", ""),
                     d["format"],
+                    d.get("style", "none"),
                 )},
                 {"role": "user", "content": (
                     "【讨论材料】\n" + _transcript(s, 8000) + "\n【灵感卡片】\n" + _sparks_text(s)

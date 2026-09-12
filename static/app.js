@@ -510,6 +510,7 @@ function fillDraftOptions() {
   fill($("#draftFormat"), state.config.draft_formats);
   fill($("#draftTone"), state.config.draft_tones);
   fill($("#draftLength"), state.config.draft_lengths);
+  if (state.config.draft_styles) fill($("#draftStyle"), state.config.draft_styles);
 }
 
 function renderDrafts() {
@@ -528,14 +529,15 @@ function renderDrafts() {
 function buildDraftCard(d) {
   const s = state.session;
   const fmtLabel = (state.config.draft_formats || {})[d.format] || d.format;
+  const styleLabel = (state.config.draft_styles || {})[d.style];
   const card = document.createElement("div");
   card.className = "draft-card";
 
   const head = document.createElement("div");
   head.className = "draft-card-head";
   head.innerHTML = `
-    <span class="draft-title">✍️ ${escapeHtml(fmtLabel)}</span>
-    <span class="draft-time">${fmtTime(d.updated_at)} · ${d.content.length} 字${d.history.length ? ` · 改${d.history.length}稿` : ""}</span>`;
+    <span class="draft-title">✍️ ${escapeHtml(fmtLabel)}${styleLabel && styleLabel !== "自然文风" ? `<span class="draft-style-tag">${escapeHtml(styleLabel.split(" · ")[0])}</span>` : ""}</span>
+    <span class="draft-time">${fmtTime(d.updated_at)} · ${d.content.length} 字${d.history.length ? ` · 改${d.history.length}稿` : ""}${d.polished ? " · 💎" : ""}</span>`;
   head.onclick = () => body.classList.toggle("collapsed");
   card.appendChild(head);
 
@@ -642,6 +644,8 @@ async function generateDraft() {
       format: $("#draftFormat").value,
       tone: $("#draftTone").value,
       length: $("#draftLength").value,
+      style: $("#draftStyle").value,
+      style_custom: $("#draftStyleCustom") ? $("#draftStyleCustom").value.trim() : "",
       extra: $("#draftExtra").value.trim(),
       spark_ids: pickedSparkIds(),
     }, (ev) => {
@@ -1179,6 +1183,14 @@ async function init() {
   // 素材精选全选/全不选
   $("#pickerAll").onclick = () => $$("#pickerList input").forEach(i => (i.checked = true));
   $("#pickerNone").onclick = () => $$("#pickerList input").forEach(i => (i.checked = false));
+
+  // 风格切换：自定义时显示描述框
+  const styleSel = $("#draftStyle");
+  if (styleSel) {
+    styleSel.onchange = () => {
+      $("#styleCustomField").hidden = styleSel.value !== "custom";
+    };
+  }
 
   // 写作画像刷新
   $("#btnProfileRefresh").onclick = async () => {
