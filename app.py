@@ -1216,8 +1216,212 @@ async def weekly_report_feishu():
         raise HTTPException(502, f"写入飞书失败: {e}")
 
 
-class DraftPatch(BaseModel):
-    content: str
+# ---------------------------------------------------------------------------
+# 素材导入 / 金句锻造 / 写作目标 / Word 导出
+# ---------------------------------------------------------------------------
+class ImportBody(BaseModel):
+    text: str
+
+
+@app.post("/api/import")
+async def import_material(body: ImportBody):
+    """素材导入：粘贴长文 → 金句灵感 + 话题方向"""
+    text = body.text.strip()
+    if len(text) < 30:
+        raise HTTPException(400, "材料太短（至少 30 字）")
+    try:
+        raw = await llm.chat_once(
+            [{"role": "user", "content": prompts.import_prompt() + text[:12000]}],
+            model=llm.draft_model, max_tokens=1000, temperature=0.5, thinking=False,
+        )
+        data = _extract_json(raw)
+        sparks = [str(s).strip()[:300] for s in (data.get("sparks") or []) if str(s).strip()][:10]
+        topics = []
+        for t in (data.get("topics") or [])[:3]:
+            if isinstance(t, dict) and t.get("title"):
+                topics.append({
+                    "title": str(t["title"]).strip()[:20],
+                    "hook": str(t.get("hook", "")).strip()[:120],
+                })
+        if not sparks and not topics:
+            raise RuntimeError(f"无法解析: {raw[:80]}")
+        return {"gist": str(data.get("gist", "")).strip()[:60], "sparks": sparks, "topics": topics}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"导入解析失败: {e}")
+
+
+class BatchSparksBody(BaseModel):
+    texts: list
+    origin: str = "import"
+
+
+@app.post("/api/sessions/{sid}/sparks/batch")
+async def sparks_batch(sid: str, body: BatchSparksBody):
+    """批量收灵感（素材导入/金句锻造用），自动跳过重复"""
+    async with _lock(sid):
+        s = _get_session(sid)
+        existing_heads = {sp["text"][:16] for sp in s.get("sparks", [])}
+        added = []
+        f = s.setdefault("feishu", {})
+        for t in body.texts:
+            t = str(t).strip()[:300]
+            if not t or t[:16] in existing_heads:
+                continue
+            sp = {"id": store.new_id(), "text": t, "note": "", "origin": body.origin,
+                  "ts": store.now_ts()}
+            s["sparks"].append(sp)
+            existing_heads.add(t[:16])
+            added.append(sp)
+            if f.get("doc_id") and (fs.enabled and fs.auto_record or MOCK):
+                await writer.enqueue(f["doc_id"], [feishu.spark_block(sp["text"])], label="灵感")
+                f["sparks_synced"] = f.get("sparks_synced", 0) + 1
+        store.save_session(s)
+        return {"added": len(added), "sparks": added}
+
+
+@app.post("/api/sessions/{sid}/forge_quotes")
+async def forge_quotes(sid: str):
+    """金句锻造坊：从话题材料批量锻造新金句"""
+    async with _lock(sid):
+        s = _get_session(sid)
+        if not s.get("messages"):
+            raise HTTPException(400, "还没有讨论内容")
+        material = (f"【讨论记录】\n{_transcript(s, 8000)}\n\n【已有灵感】\n{_sparks_text(s)}")
+        try:
+            raw = await llm.chat_once(
+                [{"role": "user", "content": prompts.forge_quotes_prompt() + material}],
+                model=llm.draft_model, max_tokens=900, temperature=0.9, thinking=False,
+            )
+            data = _extract_json(raw)
+            quotes = [
+                {"text": str(q.get("text", "")).strip()[:60],
+                 "technique": str(q.get("technique", "")).strip()[:10]}
+                for q in (data.get("quotes") or [])
+                if isinstance(q, dict) and q.get("text")
+            ][:10]
+            if not quotes:
+                raise RuntimeError(f"无法解析: {raw[:80]}")
+            return {"quotes": quotes}
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(502, f"锻造失败: {e}")
+
+
+@app.get("/api/goals")
+def goals_get():
+    """写作目标：每周成稿 N 篇"""
+    st = store.load_state()
+    goal = int(st.get("weekly_goal", 3))
+    week_key = store.today()
+    # 本周成稿数：所有会话里 created_at 在本周一的稿
+    import time as _t
+    now = _t.localtime()
+    week_start = _t.mktime((now.tm_year, now.tm_mon,
+                            now.tm_mday - (now.tm_wday - 1 if now.tm_wday else -6), 0, 0, 0, 0, 0, -1))
+    done = 0
+    for meta in store.list_sessions():
+        s = store.load_session(meta["id"])
+        if not s:
+            continue
+        done += sum(1 for d in s.get("drafts", []) if d.get("created_at", 0) >= week_start)
+    return {"weekly_goal": goal, "done": done, "week": week_key}
+
+
+class GoalBody(BaseModel):
+    weekly_goal: int
+
+
+@app.post("/api/goals")
+def goals_set(body: GoalBody):
+    goal = max(1, min(21, int(body.weekly_goal)))
+    st = store.load_state()
+    st["weekly_goal"] = goal
+    store.save_state(st)
+    return {"weekly_goal": goal}
+
+
+@app.get("/api/sessions/{sid}/export.docx")
+def session_export_docx(sid: str):
+    """整个话题导出 Word 文档"""
+    s = _get_session(sid)
+    try:
+        from docx import Document
+        from docx.shared import Pt, RGBColor
+        from urllib.parse import quote as urlquote
+    except ImportError:
+        raise HTTPException(500, "缺少 python-docx 依赖（pip install python-docx）")
+
+    doc = Document()
+    style = doc.styles["Normal"]
+    style.font.name = "Microsoft YaHei"
+    style.font.size = Pt(11)
+
+    doc.add_heading(s["title"], 0)
+    cats = store.DISCUSSION_MODES
+    ta = s.get("topic_analysis") or {}
+    meta = f"模式：{cats.get(s.get('mode'), s.get('mode'))}"
+    if ta.get("category"):
+        meta += f" · 分类：{store.TOPIC_CATEGORIES.get(ta['category'], ta['category'])}"
+    if isinstance(ta.get("maturity"), int):
+        meta += f" · 成熟度：{ta['maturity']}/100"
+    p = doc.add_paragraph()
+    run = p.add_run(meta)
+    run.font.color.rgb = RGBColor(0x88, 0x80, 0x74)
+    run.font.size = Pt(9)
+
+    if s.get("sparks"):
+        doc.add_heading("💡 灵感火花", 1)
+        for sp in s["sparks"]:
+            doc.add_paragraph(sp["text"] + (f"（{sp['note']}）" if sp.get("note") else ""),
+                              style="List Bullet")
+
+    doc.add_heading("💬 讨论记录", 1)
+    for m in s.get("messages", []):
+        who = "🙋 我" if m["role"] == "user" else "✍️ 搭档"
+        hp = doc.add_paragraph()
+        hr = hp.add_run(who)
+        hr.bold = True
+        for para in m["content"].split("\n"):
+            if para.strip():
+                doc.add_paragraph(para.strip())
+
+    if s.get("summary"):
+        doc.add_heading("📌 讨论小结", 1)
+        for para in s["summary"]["text"].split("\n"):
+            if para.strip():
+                doc.add_paragraph(para.strip())
+
+    fmts = prompts.DRAFT_FORMATS
+    styles_map = prompts.DRAFT_STYLES
+    for d in s.get("drafts", []):
+        label = fmts.get(d["format"], d["format"])
+        stl = styles_map.get(d.get("style", "none"), "")
+        suffix = f"（{stl}）" if stl and stl != "自然文风" else ""
+        doc.add_heading(f"✍️ 文案 · {label}{suffix}", 1)
+        for para in d["content"].split("\n"):
+            t = para.strip()
+            if not t:
+                continue
+            if t.startswith("# "):
+                doc.add_heading(t[2:].strip(), 2)
+            elif t.startswith("## "):
+                doc.add_heading(t[3:].strip(), 3)
+            else:
+                doc.add_paragraph(t)
+
+    import io
+    buf = io.BytesIO()
+    doc.save(buf)
+    from fastapi.responses import Response
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition":
+                 f"attachment; filename*=UTF-8''{urlquote(s['title'])}.docx"},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1320,6 +1524,10 @@ async def draft_checkup(sid: str, did: str):
             return {"checkup": checkup}
         except Exception as e:
             raise HTTPException(502, f"体检失败: {e}")
+
+
+class DraftPatch(BaseModel):
+    content: str
 
 
 @app.patch("/api/sessions/{sid}/drafts/{did}")

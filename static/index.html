@@ -17,8 +17,10 @@
     </div>
   </div>
   <div class="topbar-actions">
+    <span id="goalChip" class="goal-chip" title="本周成稿目标">🎯 0/3</span>
     <select id="categoryFilter" title="按分类筛选话题"></select>
     <select id="sessionSelect" title="切换话题"></select>
+    <button id="btnImport" class="btn btn-ghost" title="粘贴长文导入素材">📥</button>
     <button id="btnWeekly" class="btn btn-ghost" title="写作周报">📈</button>
     <button id="btnNewTopic" class="btn btn-primary">＋ 新话题</button>
     <button id="btnSettings" class="btn btn-ghost" title="设置">⚙</button>
@@ -41,7 +43,8 @@
         <select id="personaSelect" title="搭档人格"></select>
         <button id="btnAnalyze" class="btn btn-ghost btn-sm" title="重新分析话题分类">🏷 分析</button>
         <button id="btnSummary" class="btn btn-ghost">📌 小结</button>
-        <button id="btnExport" class="btn btn-ghost btn-sm" title="导出整个话题为 Markdown">⬇ 导出</button>
+        <button id="btnExport" class="btn btn-ghost btn-sm" title="导出整个话题为 Markdown">⬇ MD</button>
+        <button id="btnExportDocx" class="btn btn-ghost btn-sm" title="导出为 Word 文档">📄 Word</button>
       </div>
       <div id="topicTags" class="topic-tags" hidden></div>
     </div>
@@ -96,10 +99,13 @@
 
     <!-- 灵感 -->
     <div id="tab-sparks" class="tab-body active">
-      <div class="tab-head">
-        <p class="tab-hint">讨论中冒出的金子：消息旁 ⭐ 收藏、💡 行一键收下</p>
+    <div class="tab-head">
+      <p class="tab-hint">讨论中冒出的金子：消息旁 ⭐ 收藏、💡 行一键收下</p>
+      <div style="display:flex;gap:6px">
+        <button id="btnForge" class="btn btn-ghost btn-sm" title="从本话题材料批量锻造新金句">✨ 锻造金句</button>
         <button id="btnAddSpark" class="btn btn-ghost btn-sm">＋ 手动记</button>
       </div>
+    </div>
       <div id="sparkList" class="spark-list">
         <div class="tab-empty">还没有灵感<br>聊起来之后，好句子会出现在这里</div>
       </div>
@@ -213,6 +219,44 @@
   </aside>
 </main>
 
+<!-- ═══════════ 素材导入弹窗 ═══════════ -->
+<div id="modalImport" class="modal-mask" hidden>
+  <div class="modal modal-wide">
+    <h3>📥 导入素材</h3>
+    <div class="field">
+      <label>粘贴任意文字：笔记、文章、聊天记录、读书摘抄…</label>
+      <textarea id="importText" rows="8" placeholder="把现成的材料丢进来，AI 提炼金句灵感并建议可聊的话题"></textarea>
+    </div>
+    <div id="importResult" hidden>
+      <div class="field">
+        <label>提炼出的灵感（可勾选）</label>
+        <div id="importSparks" class="picker-list"></div>
+      </div>
+      <div class="field">
+        <label>建议话题（点击选一个）</label>
+        <div id="importTopics"></div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" data-close>关闭</button>
+      <button id="btnImportParse" class="btn btn-primary">🧠 提炼素材</button>
+      <button id="btnImportCreate" class="btn btn-primary" hidden>✍️ 建话题并收入灵感</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ 金句锻造弹窗 ═══════════ -->
+<div id="modalForge" class="modal-mask" hidden>
+  <div class="modal modal-wide">
+    <h3>✨ 金句锻造坊</h3>
+    <div id="forgeBody"><div class="collide-loading">从话题材料里锻造新金句…</div></div>
+    <div class="modal-actions">
+      <button id="btnForgeAll" class="btn btn-ghost" hidden>💡 全部收下</button>
+      <button class="btn btn-primary" data-close>关闭</button>
+    </div>
+  </div>
+</div>
+
 <!-- ═══════════ 灵感碰撞弹窗 ═══════════ -->
 <div id="modalCollide" class="modal-mask" hidden>
   <div class="modal modal-wide">
@@ -322,6 +366,15 @@
         <textarea id="profileText" class="profile-text" rows="4" readonly placeholder="聊几轮后自动生成；也可点「立即更新」"></textarea>
         <div class="modal-actions" style="margin-top:8px">
           <button id="btnProfileRefresh" class="btn btn-ghost btn-sm">🔄 立即更新</button>
+        </div>
+      </section>
+      <section>
+        <h4>写作目标</h4>
+        <div class="field-row">
+          <div class="field">
+            <label>每周成稿目标（篇）</label>
+            <input id="cfgWeeklyGoal" type="number" min="1" max="21">
+          </div>
         </div>
       </section>
       <section>

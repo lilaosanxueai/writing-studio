@@ -588,7 +588,7 @@ function buildDraftCard(d) {
   const contestTag = d.contest ? `<span class="draft-style-tag" style="background:#eef3ee;color:var(--green);border:1px solid #cfe0d2">竞标 · ${escapeHtml(d.contest.label)}</span>` : "";
   head.innerHTML = `
     <span class="draft-title">✍️ ${escapeHtml(fmtLabel)}${styleLabel && styleLabel !== "自然文风" ? `<span class="draft-style-tag">${escapeHtml(styleLabel.split(" · ")[0])}</span>` : ""}${contestTag}</span>
-    <span class="draft-time">${fmtTime(d.updated_at)} · ${d.content.length} 字${d.history.length ? ` · 改${d.history.length}稿` : ""}${d.polished ? " · 💎" : ""}</span>`;
+    <span class="draft-time">${fmtTime(d.updated_at)} · ${d.content.length} 字${d.format === "script" ? ` · 口播约 ${Math.max(0.5, Math.round(d.content.length / 240 * 2) / 2)} 分钟` : ""}${d.history.length ? ` · 改${d.history.length}稿` : ""}${d.polished ? " · 💎" : ""}</span>`;
   head.onclick = () => body.classList.toggle("collapsed");
   card.appendChild(head);
 
@@ -652,6 +652,13 @@ function buildDraftCard(d) {
   });
   mkBtn("💎 打磨", async () => {
     await polishDraft(d.id, card);
+  });
+  mkBtn("🔊 朗读", async () => {
+    const u = new SpeechSynthesisUtterance(ta.value.replace(/^#+\s*/gm, ""));
+    u.lang = "zh-CN";
+    u.rate = 1.05;
+    if (speechSynthesis.speaking) { speechSynthesis.cancel(); return; }
+    speechSynthesis.speak(u);
   });
   mkBtn("🩺 体检", async () => {
     await runCheckup(d, card);
@@ -1169,6 +1176,129 @@ async function startDailyTopic() {
   } catch (e) { toast(e.message, true); }
 }
 
+// ───────────────────────── 写作目标 ─────────────────────────
+async function loadGoals() {
+  try {
+    const g = await apiJson("/api/goals");
+    const chip = $("#goalChip");
+    const pct = Math.min(100, Math.round(g.done / g.weekly_goal * 100));
+    chip.innerHTML = `🎯 <span class="goal-bar"><span class="goal-fill" style="width:${pct}%"></span></span> ${g.done}/${g.weekly_goal}`;
+    chip.classList.toggle("done", g.done >= g.weekly_goal);
+    chip.title = g.done >= g.weekly_goal ? "本周目标已达成 ✅" : `本周已成稿 ${g.done} 篇 / 目标 ${g.weekly_goal} 篇（点⚙修改目标）`;
+  } catch (e) { /* 忽略 */ }
+}
+
+// ───────────────────────── 素材导入 ─────────────────────────
+let importData = null;
+let importPickedTopic = null;
+
+async function parseImport() {
+  const text = $("#importText").value.trim();
+  if (text.length < 30) { toast("材料太短（至少 30 字）", true); return; }
+  $("#btnImportParse").disabled = true;
+  $("#btnImportParse").textContent = "提炼中…";
+  try {
+    importData = await apiJson("/api/import", { method: "POST", body: JSON.stringify({ text }) });
+    // 渲染灵感（默认全勾）
+    const box = $("#importSparks");
+    box.innerHTML = "";
+    importData.sparks.forEach((t, i) => {
+      const label = document.createElement("label");
+      label.className = "picker-item";
+      label.innerHTML = `<input type="checkbox" data-i="${i}" checked><span>${escapeHtml(t)}</span>`;
+      box.appendChild(label);
+    });
+    // 渲染话题
+    const tbox = $("#importTopics");
+    tbox.innerHTML = "";
+    importData.topics.forEach((t, i) => {
+      const div = document.createElement("div");
+      div.className = "import-topic" + (i === 0 ? " picked" : "");
+      div.innerHTML = `<b>${escapeHtml(t.title)}</b><span>${escapeHtml(t.hook)}</span>`;
+      div.onclick = () => {
+        importPickedTopic = t;
+        $$("#importTopics .import-topic").forEach(x => x.classList.remove("picked"));
+        div.classList.add("picked");
+      };
+      tbox.appendChild(div);
+    });
+    importPickedTopic = importData.topics[0] || null;
+    $("#importResult").hidden = false;
+    $("#btnImportCreate").hidden = false;
+    toast(`提炼出 ${importData.sparks.length} 条灵感、${importData.topics.length} 个话题方向`);
+  } catch (e) { toast(e.message, true); }
+  finally { $("#btnImportParse").disabled = false; $("#btnImportParse").textContent = "🧠 提炼素材"; }
+}
+
+async function createFromImport() {
+  if (!importData) return;
+  const texts = [...$("#importSparks input:checked")].map(i => importData.sparks[+i.dataset.i]);
+  const t = importPickedTopic || importData.topics[0];
+  try {
+    const body = { title: t ? t.title : "", mode: "free" };
+    if (t && t.hook) body.seed = t.hook;
+    const s = await apiJson("/api/sessions", { method: "POST", body: JSON.stringify(body) });
+    if (texts.length) {
+      await api(`/api/sessions/${s.id}/sparks/batch`, {
+        method: "POST", body: JSON.stringify({ texts, origin: "import" }),
+      });
+    }
+    hideModal("#modalImport");
+    $("#importText").value = "";
+    $("#importResult").hidden = true;
+    $("#btnImportCreate").hidden = true;
+    importData = null;
+    await loadSessions();
+    await openSession(s.id);
+    toast(`话题已建，收入 ${texts.length} 条灵感 ✅`);
+  } catch (e) { toast(e.message, true); }
+}
+
+// ───────────────────────── 金句锻造坊 ─────────────────────────
+async function runForge() {
+  if (!state.session) { toast("先新建一个话题", true); return; }
+  if (!state.session.messages.length) { toast("先聊出一些材料", true); return; }
+  const body = $("#forgeBody");
+  $("#btnForgeAll").hidden = true;
+  body.innerHTML = `<div class="collide-loading">从话题材料里锻造新金句…</div>`;
+  showModal("#modalForge");
+  try {
+    const r = await apiJson(`/api/sessions/${state.session.id}/forge_quotes`, { method: "POST" });
+    body.innerHTML = "";
+    r.quotes.forEach(q => {
+      const item = document.createElement("div");
+      item.className = "forge-item";
+      item.innerHTML = `<span class="f-text">${escapeHtml(q.text)}</span><span class="f-tech">${escapeHtml(q.technique)}</span><button class="f-btn">收下</button>`;
+      item.querySelector(".f-btn").onclick = async (e) => {
+        try {
+          await api(`/api/sessions/${state.session.id}/sparks`, {
+            method: "POST",
+            body: JSON.stringify({ text: q.text, origin: "forged" }),
+          });
+          e.target.textContent = "已收下";
+          e.target.classList.add("done");
+          await refreshSessionData();
+        } catch (err) { toast(err.message, true); }
+      };
+      body.appendChild(item);
+    });
+    $("#btnForgeAll").hidden = false;
+    $("#btnForgeAll").onclick = async () => {
+      const texts = r.quotes.map(q => q.text);
+      try {
+        const res = await apiJson(`/api/sessions/${state.session.id}/sparks/batch`, {
+          method: "POST", body: JSON.stringify({ texts, origin: "forged" }),
+        });
+        toast(`收下 ${res.added} 条（重复自动跳过）💡`);
+        await refreshSessionData();
+        hideModal("#modalForge");
+      } catch (err) { toast(err.message, true); }
+    };
+  } catch (e) {
+    body.innerHTML = `<div class="collide-loading" style="color:var(--danger)">${escapeHtml(e.message)}</div>`;
+  }
+}
+
 // ───────────────────────── 飞书 ─────────────────────────
 async function refreshFeishu() {
   if (!state.config) return;
@@ -1337,6 +1467,11 @@ async function openSettings() {
   $("#cfgFsFolder").value = c.feishu.folder_token;
   $("#cfgFsSecret").value = ""; $("#cfgFsSecret").placeholder = c.feishu.enabled ? "已保存（不回显）" : "App Secret";
   showModal("#modalSettings");
+  // 写作目标
+  try {
+    const g = await apiJson("/api/goals");
+    $("#cfgWeeklyGoal").value = g.weekly_goal;
+  } catch (e) { /* 忽略 */ }
   // 写作画像（异步加载，不阻塞弹窗）
   try {
     const p = await apiJson("/api/profile");
@@ -1362,6 +1497,10 @@ async function saveSettings() {
   if ($("#cfgFsSecret").value.trim()) feishuCfg.app_secret = $("#cfgFsSecret").value.trim();
   try {
     await api("/api/config", { method: "POST", body: JSON.stringify({ llm, feishu: feishuCfg }) });
+    // 写作目标
+    const goalVal = parseInt($("#cfgWeeklyGoal").value, 10);
+    if (goalVal > 0) await api("/api/goals", { method: "POST", body: JSON.stringify({ weekly_goal: goalVal }) });
+    loadGoals();
     state.config = await apiJson("/api/config");
     hideModal("#modalSettings");
     toast("设置已保存 ✅");
@@ -1490,7 +1629,6 @@ async function init() {
       if (r.url) window.open(r.url, "_blank");
     } catch (e) { toast(e.message, true); }
   };
-
   // 灵感库引入
   $("#btnExtSparks").onclick = () => {
     const area = $("#extSparkArea");
@@ -1589,6 +1727,18 @@ async function init() {
     if (!state.session) { toast("先新建一个话题", true); return; }
     window.open(`/api/sessions/${state.session.id}/export.md`, "_blank");
   };
+  $("#btnExportDocx").onclick = () => {
+    if (!state.session) { toast("先新建一个话题", true); return; }
+    window.open(`/api/sessions/${state.session.id}/export.docx`, "_blank");
+  };
+
+  // 目标 / 导入 / 锻造
+  loadGoals();
+  $("#goalChip").onclick = openSettings;
+  $("#btnImport").onclick = () => showModal("#modalImport");
+  $("#btnImportParse").onclick = parseImport;
+  $("#btnImportCreate").onclick = createFromImport;
+  $("#btnForge").onclick = runForge;
 
   // 灵感库同步飞书
   $("#btnLibSync").onclick = async () => {
