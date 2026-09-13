@@ -19,6 +19,7 @@
   <div class="topbar-actions">
     <select id="categoryFilter" title="按分类筛选话题"></select>
     <select id="sessionSelect" title="切换话题"></select>
+    <button id="btnWeekly" class="btn btn-ghost" title="写作周报">📈</button>
     <button id="btnNewTopic" class="btn btn-primary">＋ 新话题</button>
     <button id="btnSettings" class="btn btn-ghost" title="设置">⚙</button>
   </div>
@@ -36,6 +37,8 @@
       <div class="topic-controls">
         <label class="mode-label">模式</label>
         <select id="modeSelect"></select>
+        <label class="mode-label">搭档</label>
+        <select id="personaSelect" title="搭档人格"></select>
         <button id="btnAnalyze" class="btn btn-ghost btn-sm" title="重新分析话题分类">🏷 分析</button>
         <button id="btnSummary" class="btn btn-ghost">📌 小结</button>
         <button id="btnExport" class="btn btn-ghost btn-sm" title="导出整个话题为 Markdown">⬇ 导出</button>
@@ -149,6 +152,13 @@
             </span>
           </div>
           <div id="pickerList" class="picker-list"></div>
+          <div class="picker-ext">
+            <button type="button" class="mini-btn" id="btnExtSparks">＋ 从灵感库引入</button>
+            <div id="extSparkArea" hidden>
+              <input id="extSparkSearch" placeholder="搜索灵感库…">
+              <div id="extSparkList" class="picker-list"></div>
+            </div>
+          </div>
         </div>
         <label class="switch" style="margin-bottom:10px">
           <input type="checkbox" id="autoPolish" checked>
@@ -229,6 +239,10 @@
       <label>讨论模式</label>
       <div id="modeCards" class="mode-cards"></div>
     </div>
+    <div class="field">
+      <label>搭档人格</label>
+      <div id="personaCards" class="persona-cards"></div>
+    </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" data-close>取消</button>
       <button id="btnCreateTopic" class="btn btn-primary">开始讨论</button>
@@ -251,6 +265,19 @@
     <div class="modal-actions">
       <button class="btn btn-ghost" data-close>取消</button>
       <button id="btnSaveSpark" class="btn btn-primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ 周报弹窗 ═══════════ -->
+<div id="modalWeekly" class="modal-mask" hidden>
+  <div class="modal modal-wide">
+    <h3>📈 写作周报</h3>
+    <div id="weeklyBody" class="summary-body">生成中…</div>
+    <div class="modal-actions">
+      <button id="btnWeeklyRefresh" class="btn btn-ghost">🔄 重新生成</button>
+      <button id="btnWeeklyFeishu" class="btn btn-ghost">📘 存到飞书</button>
+      <button class="btn btn-primary" data-close>关闭</button>
     </div>
   </div>
 </div>

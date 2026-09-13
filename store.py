@@ -115,12 +115,13 @@ def bump_total_user_turns(n: int = 1) -> int:
 # ---------------------------------------------------------------------------
 # 会话
 # ---------------------------------------------------------------------------
-def new_session(title: str = "", mode: str = "free") -> dict:
+def new_session(title: str = "", mode: str = "free", persona: str = "buddy") -> dict:
     s = {
         "id": new_id(),
         "title": (title or "").strip() or f"未命名话题 · {today_label()}",
         "topic": (title or "").strip(),
         "mode": mode if mode in DISCUSSION_MODES else "free",
+        "persona": persona,
         "created_at": now_ts(),
         "updated_at": now_ts(),
         "messages": [],

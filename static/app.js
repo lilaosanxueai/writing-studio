@@ -171,6 +171,7 @@ function renderSession() {
   $("#chatEmpty").style.display = s.messages.length ? "none" : "";
   $("#topicTitle").textContent = s.title;
   $("#modeSelect").value = s.mode;
+  $("#personaSelect").value = s.persona || "buddy";
   renderAnalysis();
 
   const list = $("#chatList");
@@ -655,6 +656,9 @@ function buildDraftCard(d) {
   mkBtn("🩺 体检", async () => {
     await runCheckup(d, card);
   });
+  mkBtn("🖋 标题", async () => {
+    await genTitles(d, card);
+  });
   if (d.contest) {
     mkBtn("🗑 其它竞标稿", async () => {
       if (!confirm("保留这一稿，删除同场竞标的其它稿？")) return;
@@ -684,11 +688,91 @@ function buildDraftCard(d) {
   });
   body.appendChild(actions);
 
+  // 转格式行（一稿多发）
+  const convertRow = document.createElement("div");
+  convertRow.className = "convert-row";
+  const convSel = document.createElement("select");
+  for (const [k, v] of Object.entries(state.config.draft_formats || {})) {
+    if (k === d.format || k === "custom") continue;
+    const o = document.createElement("option");
+    o.value = k; o.textContent = "转 " + v;
+    convSel.appendChild(o);
+  }
+  const convBtn = document.createElement("button");
+  convBtn.className = "btn btn-ghost btn-sm";
+  convBtn.textContent = "🔄 转格式";
+  convBtn.onclick = async () => {
+    if (state.draftBusy) return;
+    state.draftBusy = true;
+    convBtn.disabled = true;
+    const box = buildStreamBox(`🔄 转成 ${convSel.selectedOptions[0].textContent.replace("转 ", "")}`);
+    card.querySelector(".draft-card-body").prepend(box);
+    try {
+      await sseFetch(`/api/sessions/${state.session.id}/drafts/${d.id}/convert`, { format: convSel.value }, (ev) => {
+        if (ev.t === "delta") {
+          box.querySelector(".stream-text").textContent += ev.v;
+          box.scrollTop = box.scrollHeight;
+        } else if (ev.t === "error") throw new Error(ev.v);
+      });
+      await refreshSessionData();
+      toast("转格式完成 🔄");
+    } catch (e) { toast("转格式失败：" + e.message, true); }
+    finally { box.remove(); state.draftBusy = false; convBtn.disabled = false; }
+  };
+  convertRow.appendChild(convSel);
+  convertRow.appendChild(convBtn);
+  body.appendChild(convertRow);
+
   // 已有体检结果 → 渲染面板
   if (d.checkup) body.appendChild(buildCheckupPanel(d, card));
+  // 已有标题候选 → 渲染面板
+  if (d.titles && d.titles.length) body.appendChild(buildTitlePanel(d, card));
 
   card.appendChild(body);
   return card;
+}
+
+// 标题工坊
+async function genTitles(d, card) {
+  const btn = [...card.querySelectorAll(".draft-actions .btn")].find(b => b.textContent.includes("标题"));
+  if (btn) btn.disabled = true;
+  try {
+    const r = await apiJson(`/api/sessions/${state.session.id}/drafts/${d.id}/titles`, { method: "POST" });
+    d.titles = r.titles;
+    const old = card.querySelector(".title-panel");
+    if (old) old.remove();
+    card.querySelector(".draft-card-body").appendChild(buildTitlePanel(d, card));
+    toast(`已生成 ${r.titles.length} 个标题，点击应用`);
+  } catch (e) { toast(e.message, true); }
+  finally { if (btn) btn.disabled = false; }
+}
+
+function buildTitlePanel(d, card) {
+  const panel = document.createElement("div");
+  panel.className = "title-panel";
+  panel.innerHTML = `<div class="ck-label" style="color:var(--gold);margin-bottom:6px">🖋 标题工坊（点击应用）</div>`;
+  for (const t of d.titles) {
+    const item = document.createElement("div");
+    item.className = "t-item";
+    item.innerHTML = `<span class="t-text">${escapeHtml(t.text)}</span><span class="t-type">${escapeHtml(t.type)}</span>`;
+    item.onclick = async () => {
+      const ta = card.querySelector(".draft-content");
+      const cur = ta.value;
+      const lines = cur.split("\n");
+      const newContent = (lines[0] || "").startsWith("# ")
+        ? ["# " + t.text, ...lines.slice(1)].join("\n")
+        : "# " + t.text + "\n\n" + cur;
+      try {
+        await api(`/api/sessions/${state.session.id}/drafts/${d.id}`, {
+          method: "PATCH", body: JSON.stringify({ content: newContent }),
+        });
+        ta.value = newContent;
+        toast("标题已应用");
+      } catch (e) { toast(e.message, true); }
+    };
+    panel.appendChild(item);
+  }
+  return panel;
 }
 
 // 成稿体检
@@ -767,6 +851,7 @@ async function generateDraft() {
       style_custom: $("#draftStyleCustom") ? $("#draftStyleCustom").value.trim() : "",
       extra: $("#draftExtra").value.trim(),
       spark_ids: pickedSparkIds(),
+      ext_sparks: extSparks.length ? extSparks : null,
     }, (ev) => {
       if (ev.t === "delta") {
         box.querySelector(".stream-text").textContent += ev.v;
@@ -885,6 +970,7 @@ async function generateContest() {
       style_custom: $("#draftStyleCustom") ? $("#draftStyleCustom").value.trim() : "",
       extra: $("#draftExtra").value.trim(),
       spark_ids: pickedSparkIds(),
+      ext_sparks: extSparks.length ? extSparks : null,
     }, (ev) => {
       if (ev.t === "start") {
         boxes[ev.index] = mkBox(ev.label);
@@ -939,6 +1025,18 @@ function renderLightMd(text) {
     else out.push(escapeHtml(line));
   }
   return out.join("<br>");
+}
+
+// ───────────────────────── 写作周报 ─────────────────────────
+async function openWeekly(refresh = false) {
+  showModal("#modalWeekly");
+  $("#weeklyBody").textContent = "生成中…";
+  try {
+    const r = await apiJson(`/api/weekly_report${refresh ? "?refresh=1" : ""}`);
+    $("#weeklyBody").innerHTML = renderLightMd(r.text);
+  } catch (e) {
+    $("#weeklyBody").textContent = "生成失败：" + e.message;
+  }
 }
 
 // ───────────────────────── 灵感库（全局） ─────────────────────────
@@ -1116,15 +1214,22 @@ async function feishuCheck() {
 }
 
 // ───────────────────────── 素材精选（文案生成） ─────────────────────────
+let extSparks = [];   // 从灵感库引入的跨话题灵感文本
+
 function renderSparkPicker() {
   const box = $("#sparkPicker");
   const sparks = state.session ? state.session.sparks : [];
-  if (!sparks.length) {
-    box.hidden = true;
-    return;
+  extSparks = [];
+  renderExtChips();
+  $("#extSparkArea").hidden = true;
+  if (!sparks.length && !extSparks.length) {
+    // 无本话题灵感也允许从库引入，保留展开按钮
   }
   const list = $("#pickerList");
   list.innerHTML = "";
+  if (!sparks.length) {
+    list.innerHTML = `<span class="picker-empty">本话题还没有灵感，可从下方灵感库引入</span>`;
+  }
   for (const sp of sparks) {
     const label = document.createElement("label");
     label.className = "picker-item";
@@ -1137,6 +1242,52 @@ function renderSparkPicker() {
 function pickedSparkIds() {
   if ($("#sparkPicker").hidden) return null;  // 未显示 = 不筛选，用全部
   return [...$("#pickerList input:checked")].map(i => i.value);
+}
+
+async function searchExtSparks() {
+  const q = $("#extSparkSearch").value.trim();
+  const r = await apiJson(`/api/sparks/all${q ? `?q=${encodeURIComponent(q)}` : ""}`);
+  const box = $("#extSparkList");
+  box.innerHTML = "";
+  const curIds = new Set((state.session ? state.session.sparks : []).map(s => s.text));
+  const items = r.sparks.filter(sp => !curIds.has(sp.text) && !extSparks.includes(sp.text)).slice(0, 12);
+  if (!items.length) {
+    box.innerHTML = `<span class="picker-empty">没有可引入的灵感</span>`;
+    return;
+  }
+  for (const sp of items) {
+    const item = document.createElement("div");
+    item.className = "picker-item";
+    item.style.cursor = "pointer";
+    item.innerHTML = `<span>➕ ${escapeHtml(sp.text)}<br><small style="color:var(--ink-3)">——《${escapeHtml(sp.session_title)}》</small></span>`;
+    item.onclick = () => {
+      extSparks.push(sp.text);
+      renderExtChips();
+      searchExtSparks();
+    };
+    box.appendChild(item);
+  }
+}
+
+function renderExtChips() {
+  const area = $("#extSparkArea");
+  let row = area.querySelector(".ext-chip-row");
+  if (!row) {
+    row = document.createElement("div");
+    row.className = "ext-chip-row";
+    area.prepend(row);
+  }
+  row.innerHTML = "";
+  extSparks.forEach((t, i) => {
+    const chip = document.createElement("span");
+    chip.className = "ext-chip";
+    chip.innerHTML = `<span title="${escapeHtml(t)}">${escapeHtml(t)}</span><button title="移除">✕</button>`;
+    chip.querySelector("button").onclick = () => {
+      extSparks.splice(i, 1);
+      renderExtChips();
+    };
+    row.appendChild(chip);
+  });
 }
 
 // ───────────────────────── 语音输入（浏览器支持才显示） ─────────────────────────
@@ -1220,11 +1371,18 @@ async function saveSettings() {
 
 // ───────────────────────── 新话题 ─────────────────────────
 let newTopicMode = "free";
+let newTopicPersona = "buddy";
 const MODE_DESC = {
   free: ["自由聊", "正常搭档：回应、追问、贡献角度"],
   brainstorm: ["头脑风暴", "发散为主，每轮给新方向"],
   deepdive: ["深挖追问", "一次盯一个点往深打"],
   challenge: ["唱反调", "专挑漏洞，逼你想清楚"],
+};
+const PERSONA_DESC = {
+  buddy: ["老友搭子", "平视可靠"],
+  editor: ["毒舌主编", "一针见血"],
+  gentle: ["温柔文友", "先接情绪"],
+  socratic: ["苏格拉底", "只问不答"],
 };
 
 function renderModeCards() {
@@ -1243,12 +1401,28 @@ function renderModeCards() {
   }
 }
 
+function renderPersonaCards() {
+  const box = $("#personaCards");
+  box.innerHTML = "";
+  for (const [k, [name, desc]] of Object.entries(PERSONA_DESC)) {
+    const card = document.createElement("div");
+    card.className = "persona-card" + (k === newTopicPersona ? " active" : "");
+    card.innerHTML = `<b>${name}</b><span>${desc}</span>`;
+    card.onclick = () => {
+      newTopicPersona = k;
+      $$("#personaCards .persona-card").forEach((c) => c.classList.remove("active"));
+      card.classList.add("active");
+    };
+    box.appendChild(card);
+  }
+}
+
 async function createTopic() {
   const title = $("#newTopicTitle").value.trim();
   try {
     const s = await apiJson("/api/sessions", {
       method: "POST",
-      body: JSON.stringify({ title, mode: newTopicMode }),
+      body: JSON.stringify({ title, mode: newTopicMode, persona: newTopicPersona }),
     });
     hideModal("#modalNew");
     $("#newTopicTitle").value = "";
@@ -1283,9 +1457,50 @@ async function init() {
 
   fillDraftOptions();
   renderModeCards();
+  renderPersonaCards();
   await loadSessions(true);
   renderWeekStats();
   setupMic();
+
+  // 搭档人格选择器
+  const personaSel = $("#personaSelect");
+  for (const [k, v] of Object.entries(state.config.personas || {})) {
+    const o = document.createElement("option");
+    o.value = k; o.textContent = v;
+    personaSel.appendChild(o);
+  }
+  personaSel.onchange = async () => {
+    if (!state.session) return;
+    try {
+      state.session = await apiJson(`/api/sessions/${state.session.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ persona: personaSel.value }),
+      });
+      toast(`搭档已切换为「${state.config.personas[personaSel.value]}」`);
+    } catch (e) { toast(e.message, true); }
+  };
+
+  // 周报
+  $("#btnWeekly").onclick = openWeekly;
+  $("#btnWeeklyRefresh").onclick = () => openWeekly(true);
+  $("#btnWeeklyFeishu").onclick = async () => {
+    try {
+      const r = await apiJson("/api/weekly_report/feishu", { method: "POST" });
+      toast("周报已写入飞书 ✅");
+      if (r.url) window.open(r.url, "_blank");
+    } catch (e) { toast(e.message, true); }
+  };
+
+  // 灵感库引入
+  $("#btnExtSparks").onclick = () => {
+    const area = $("#extSparkArea");
+    area.hidden = !area.hidden;
+    if (!area.hidden) searchExtSparks();
+  };
+  $("#extSparkSearch").oninput = () => {
+    clearTimeout($("#extSparkSearch")._timer);
+    $("#extSparkSearch")._timer = setTimeout(searchExtSparks, 350);
+  };
 
   // ── 事件绑定 ──
   $("#btnNewTopic").onclick = () => showModal("#modalNew");

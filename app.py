@@ -129,7 +129,7 @@ def _chat_messages(s: dict) -> list:
     sparks = [sp["text"] for sp in s.get("sparks", []) if sp.get("text")]
     profile = store.get_profile().get("text", "")
     sys_prompt = prompts.partner_system_prompt(s.get("topic") or s["title"], s.get("mode", "free"),
-                                               sparks, profile)
+                                               sparks, profile, s.get("persona", "buddy"))
     history = s.get("messages", [])
     # 近 40 轮、总字数 12000 以内
     msgs, budget = [], 12000
@@ -381,6 +381,7 @@ def get_config():
         },
         "server": {"lan": bool(CONFIG.get("server", {}).get("lan"))},
         "modes": store.DISCUSSION_MODES,
+        "personas": prompts.PARTNER_PERSONAS,
         "topic_categories": store.TOPIC_CATEGORIES,
         "draft_formats": prompts.DRAFT_FORMATS,
         "draft_tones": prompts.DRAFT_TONES,
@@ -425,12 +426,14 @@ def sessions_list():
 class SessionCreate(BaseModel):
     title: str = ""
     mode: str = "free"
+    persona: str = "buddy"
     seed: str = ""   # 搭档开场白（灵感碰撞「开聊」用），作为首条 assistant 消息注入
 
 
 @app.post("/api/sessions")
 def session_create(body: SessionCreate):
-    s = store.new_session(body.title, body.mode)
+    s = store.new_session(body.title, body.mode,
+                          body.persona if body.persona in prompts.PARTNER_PERSONAS else "buddy")
     if body.seed.strip():
         s["messages"].append({"role": "assistant", "content": body.seed.strip()[:600],
                               "ts": store.now_ts()})
@@ -446,6 +449,7 @@ def session_get(sid: str):
 class SessionPatch(BaseModel):
     title: Optional[str] = None
     mode: Optional[str] = None
+    persona: Optional[str] = None
 
 
 @app.patch("/api/sessions/{sid}")
@@ -462,6 +466,8 @@ async def session_patch(sid: str, body: SessionPatch):
                     log.warning("飞书文档改名失败: %s", e)
         if body.mode is not None and body.mode in store.DISCUSSION_MODES:
             s["mode"] = body.mode
+        if body.persona is not None and body.persona in prompts.PARTNER_PERSONAS:
+            s["persona"] = body.persona
         store.save_session(s)
         return s
 
@@ -856,23 +862,29 @@ class DraftBody(BaseModel):
     style_custom: str = ""
     extra: str = ""
     spark_ids: Optional[list] = None   # None=全部灵感；[]=不用；[...]=只勾选的
+    ext_sparks: Optional[list] = None  # 从灵感库引入的跨话题灵感文本
 
 
-def _selected_sparks_text(s: dict, spark_ids) -> str:
-    """按勾选过滤灵感（素材精选）；spark_ids 为 None 时用全部"""
+def _selected_sparks_text(s: dict, spark_ids, ext_sparks=None) -> str:
+    """按勾选过滤灵感（素材精选）；spark_ids 为 None 时用全部；ext_sparks 为跨话题引入"""
     items = [sp["text"] for sp in s.get("sparks", []) if sp.get("text")]
     if spark_ids is not None:
         idset = set(spark_ids)
         items = [sp["text"] for sp in s.get("sparks", [])
                  if sp.get("id") in idset and sp.get("text")]
+    for t in (ext_sparks or []):
+        t = str(t).strip()[:300]
+        if t:
+            items.append(f"{t}（引自其它话题）")
     return "\n".join(f"- {t}" for t in items) or "（暂无）"
 
 
 def _draft_material(s: dict, fmt: str, tone: str, length: str, extra: str,
-                    spark_ids=None, style: str = "none", style_custom: str = "") -> list:
+                    spark_ids=None, style: str = "none", style_custom: str = "",
+                    ext_sparks=None) -> list:
     fmt_label = prompts.DRAFT_FORMATS.get(fmt, fmt)
     profile = store.get_profile().get("text", "")
-    sparks_part = _selected_sparks_text(s, spark_ids)
+    sparks_part = _selected_sparks_text(s, spark_ids, ext_sparks)
     return [
         {"role": "system", "content": prompts.draft_system_prompt(
             fmt_label,
@@ -911,7 +923,8 @@ async def draft_create(sid: str, body: DraftBody):
             try:
                 async for piece in llm.chat_stream(
                     _draft_material(s, body.format, body.tone, body.length, body.extra,
-                                    body.spark_ids, body.style, body.style_custom),
+                                    body.spark_ids, body.style, body.style_custom,
+                                    body.ext_sparks),
                     model=llm.draft_model, max_tokens=4096,
                 ):
                     full += piece
@@ -1029,6 +1042,180 @@ async def draft_polish(sid: str, did: str, body: PolishBody = None):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@app.post("/api/sessions/{sid}/drafts/{did}/titles")
+async def draft_titles(sid: str, did: str):
+    """标题工坊：一稿十题，覆盖不同手法"""
+    async with _lock(sid):
+        s = _get_session(sid)
+        d = next((x for x in s.get("drafts", []) if x["id"] == did), None)
+        if not d:
+            raise HTTPException(404, "文案不存在")
+        try:
+            raw = await llm.chat_once(
+                [{"role": "user", "content": prompts.titles_prompt() + d["content"]}],
+                model=llm.draft_model, max_tokens=600, temperature=0.9, thinking=False,
+            )
+            data = _extract_json(raw)
+            titles = [
+                {"text": str(t.get("text", "")).strip()[:24], "type": str(t.get("type", "")).strip()[:8]}
+                for t in (data.get("titles") or []) if isinstance(t, dict) and t.get("text")
+            ][:10]
+            if not titles:
+                raise RuntimeError(f"无法解析: {raw[:80]}")
+            d["titles"] = titles
+            store.save_session(s)
+            return {"titles": titles}
+        except Exception as e:
+            raise HTTPException(502, f"标题生成失败: {e}")
+
+
+class ConvertBody(BaseModel):
+    format: str
+
+
+@app.post("/api/sessions/{sid}/drafts/{did}/convert")
+async def draft_convert(sid: str, did: str, body: ConvertBody):
+    """一稿多发：把已成稿改写成另一种格式（新稿入库）"""
+    if body.format not in prompts.DRAFT_FORMATS:
+        raise HTTPException(400, "未知格式")
+    async def gen():
+        async with _lock(sid):
+            s = _get_session(sid)
+            d = next((x for x in s.get("drafts", []) if x["id"] == did), None)
+            if not d:
+                yield _sse({"t": "error", "v": "文案不存在"})
+                return
+            src_label = prompts.DRAFT_FORMATS.get(d["format"], d["format"])
+            dst_label = prompts.DRAFT_FORMATS.get(body.format, body.format)
+            msgs = [
+                {"role": "system", "content": prompts.draft_system_prompt(
+                    dst_label, prompts.DRAFT_TONES.get(d.get("tone", "casual"), "口语随和"),
+                    prompts.DRAFT_LENGTHS.get(d.get("length", "medium"), "中等长度"),
+                    "", "", body.format, d.get("style", "none"),
+                )},
+                {"role": "user", "content": (
+                    f"【改写任务】\n{prompts.convert_prompt(src_label, dst_label)}\n\n"
+                    f"【已成稿原文（{src_label}）】\n{d['content']}"
+                )},
+            ]
+            draft = {
+                "id": store.new_id(), "format": body.format, "tone": d.get("tone", "casual"),
+                "length": d.get("length", "medium"), "style": d.get("style", "none"),
+                "instruction": f"由{src_label}转写", "content": "",
+                "converted_from": did,
+                "created_at": store.now_ts(), "updated_at": store.now_ts(), "history": [],
+            }
+            full = ""
+            try:
+                async for piece in llm.chat_stream(msgs, model=llm.draft_model, max_tokens=4096):
+                    full += piece
+                    yield _sse({"t": "delta", "v": piece})
+                if not full.strip():
+                    raise RuntimeError("空回复")
+            except Exception as e:
+                log.error("转格式失败: %s", e)
+                yield _sse({"t": "error", "v": str(e)[:300]})
+                return
+            draft["content"] = full.strip()
+            s.setdefault("drafts", []).insert(0, draft)
+            store.save_session(s)
+            yield _sse({"t": "done", "draft": draft})
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ---------------------------------------------------------------------------
+# 写作周报
+# ---------------------------------------------------------------------------
+def _week_stats_text() -> str:
+    week_start = None
+    import time as _t
+    now = _t.localtime()
+    # 本周一 0 点
+    import calendar
+    ts = _t.mktime((now.tm_year, now.tm_mon, now.tm_mday - now.tm_wday + 1 if now.tm_wday else now.tm_mday - 6, 0, 0, 0, 0, 0, -1))
+    sessions = store.list_sessions()
+    week = [m for m in sessions if m.get("created_at", 0) >= ts]
+    all_sparks = _all_sparks()
+    lines = [
+        f"本周新建话题 {len(week)} 个（现存共 {len(sessions)} 个）",
+        f"本周讨论轮数 {sum(m['message_count'] for m in week) // 2}，产出字数 {sum(m.get('chars', 0) for m in week)}",
+        f"累计灵感 {len(all_sparks)} 条；本周新收 {sum(m['spark_count'] for m in week)} 条",
+        f"本周成稿 {sum(m['draft_count'] for m in week)} 篇",
+    ]
+    cats = {}
+    for m in sessions:
+        if m.get("category"):
+            cats[m["category"]] = cats.get(m["category"], 0) + 1
+    if cats:
+        top = sorted(cats.items(), key=lambda x: -x[1])[:3]
+        from store import TOPIC_CATEGORIES
+        lines.append("话题分类分布：" + "、".join(f"{TOPIC_CATEGORIES.get(k, k)}×{v}" for k, v in top))
+    recent_sparks = [sp["text"] for sp in all_sparks[:6]]
+    if recent_sparks:
+        lines.append("最近的灵感：\n" + "\n".join(f"- {t}" for t in recent_sparks))
+    profile = store.get_profile().get("text", "")
+    if profile:
+        lines.append(f"写作画像：{profile[:150]}")
+    return "\n".join(lines)
+
+
+async def _gen_weekly_report() -> str:
+    text = await llm.chat_once(
+        [{"role": "user", "content": prompts.weekly_report_prompt(_week_stats_text())}],
+        model=llm.draft_model, max_tokens=1500, temperature=0.7, thinking=False,
+    )
+    st = store.load_state()
+    st["weekly_report"] = {"week": store.today()[:7] + f"-w{_isoweek()}", "text": text.strip(), "ts": store.now_ts()}
+    store.save_state(st)
+    return text.strip()
+
+
+def _isoweek() -> str:
+    import datetime
+    return str(datetime.date.today().isocalendar()[1])
+
+
+@app.get("/api/weekly_report")
+async def weekly_report_get(refresh: str = ""):
+    cached = store.load_state().get("weekly_report")
+    if refresh != "1" and cached and cached.get("week", "").endswith("-w" + _isoweek()):
+        return {"text": cached["text"], "cached": True}
+    try:
+        text = await _gen_weekly_report()
+        return {"text": text, "cached": False}
+    except Exception as e:
+        if cached:
+            return {"text": cached["text"], "cached": True}
+        raise HTTPException(502, f"周报生成失败: {e}")
+
+
+@app.post("/api/weekly_report/feishu")
+async def weekly_report_feishu():
+    """本周周报写入飞书「📊 写作共创坊 · 周报」文档（按周追加）"""
+    if not fs.enabled and not feishu.MOCK:
+        raise HTTPException(400, "飞书未配置")
+    cached = store.load_state().get("weekly_report")
+    text = cached.get("text") if cached else None
+    if not text:
+        text = await _gen_weekly_report()
+    st = store.load_state()
+    try:
+        doc = st.get("weekly_doc") or {}
+        if not doc.get("token"):
+            created = await asyncio.to_thread(fs.create_doc, "📊 写作共创坊 · 周报")
+            doc = {"token": created["token"], "url": created["url"]}
+            st["weekly_doc"] = doc
+        blocks = feishu.summary_blocks(f"📈 写作周报 · {store.today_label()}", text)
+        await writer.enqueue(doc["token"], blocks, label="周报")
+        store.save_state(st)
+        return {"ok": True, "url": doc.get("url", "")}
+    except Exception as e:
+        store.save_state(st)
+        raise HTTPException(502, f"写入飞书失败: {e}")
+
+
 class DraftPatch(BaseModel):
     content: str
 
@@ -1044,6 +1231,7 @@ class ContestBody(BaseModel):
     style_custom: str = ""
     extra: str = ""
     spark_ids: Optional[list] = None
+    ext_sparks: Optional[list] = None
 
 
 @app.post("/api/sessions/{sid}/drafts/contest")
@@ -1072,7 +1260,8 @@ async def draft_contest(sid: str, body: ContestBody):
                 try:
                     async for piece in llm.chat_stream(
                         _draft_material(s, body.format, body.tone, body.length, extra_i,
-                                        body.spark_ids, body.style, body.style_custom),
+                                        body.spark_ids, body.style, body.style_custom,
+                                        body.ext_sparks),
                         model=llm.draft_model, max_tokens=4096,
                     ):
                         full += piece
