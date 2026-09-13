@@ -38,6 +38,7 @@
         <select id="modeSelect"></select>
         <button id="btnAnalyze" class="btn btn-ghost btn-sm" title="重新分析话题分类">🏷 分析</button>
         <button id="btnSummary" class="btn btn-ghost">📌 小结</button>
+        <button id="btnExport" class="btn btn-ghost btn-sm" title="导出整个话题为 Markdown">⬇ 导出</button>
       </div>
       <div id="topicTags" class="topic-tags" hidden></div>
     </div>
@@ -47,6 +48,15 @@
         <div class="empty-art">🖋️</div>
         <h3>从一个念头开始</h3>
         <p>丢进来一个话题、一句牢骚、一个模糊的想法——<br>搭档会陪你把它聊成能写的东西。</p>
+        <div id="dailyCard" class="daily-card" hidden>
+          <div class="daily-head">
+            <span>🌅 今日写作提示</span>
+            <button id="btnDailyRefresh" class="mini-btn" title="换一个">🔄</button>
+          </div>
+          <div class="daily-opening" id="dailyOpening"></div>
+          <div class="daily-meta"><span id="dailyAngle"></span><span id="dailyDare"></span></div>
+          <button id="btnDailyStart" class="btn btn-primary btn-sm">✍️ 就聊这个</button>
+        </div>
         <div id="weekStats" class="week-stats" hidden></div>
         <div class="empty-suggestions">
           <button class="chip-suggest" data-fill="我最近想写一篇关于「为什么人越来越不想社交」的东西，但只有个模糊感觉">想写「为什么人越来越不想社交」</button>
@@ -144,7 +154,10 @@
           <input type="checkbox" id="autoPolish" checked>
           <span>生成后自动打磨（编辑二遍稿：去 AI 味、锻金句）</span>
         </label>
-        <button id="btnGenDraft" class="btn btn-primary btn-block">开始整理成稿</button>
+        <div class="btn-pair">
+          <button id="btnGenDraft" class="btn btn-primary">开始整理成稿</button>
+          <button id="btnContest" class="btn btn-contest" title="同一材料按三种角度各出一稿，择优留用">⚡ 三稿竞标</button>
+        </div>
       </div>
       <div id="draftList" class="draft-list">
         <div class="tab-empty">还没有文案<br>聊出素材后点「生成文案」</div>
@@ -155,7 +168,10 @@
     <div id="tab-library" class="tab-body">
       <div class="tab-head">
         <p class="tab-hint">跨话题的所有灵感卡片 <span id="libTotal"></span></p>
-        <button id="btnCollide" class="btn btn-primary btn-sm">🎲 灵感碰撞</button>
+        <div style="display:flex;gap:6px">
+          <button id="btnLibSync" class="btn btn-ghost btn-sm" title="同步到飞书独立文档">📘 同步</button>
+          <button id="btnCollide" class="btn btn-primary btn-sm">🎲 灵感碰撞</button>
+        </div>
       </div>
       <div class="lib-search">
         <input id="libSearch" placeholder="搜灵感或话题…">

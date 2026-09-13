@@ -244,15 +244,17 @@ function renderMessage(m, streamEl = null) {
   body.className = "msg-body";
 
   if (m.role === "assistant" && streamEl === null) {
-    // 完整渲染：拆出 💡 行
+    // 完整渲染：拆出 💡 行与 ▶ 方向行
     const lines = (m.content || "").split("\n");
-    const plain = [], sparkLines = [];
+    const plain = [], sparkLines = [], nextSteps = [];
     for (const line of lines) {
       if (/^\s*💡/.test(line)) sparkLines.push(line.replace(/^\s*💡\s*/, "").trim());
+      else if (/^\s*▶/.test(line)) nextSteps.push(...line.replace(/^\s*▶\s*/, "").split(/｜|\|/).map(s => s.trim()).filter(Boolean));
       else plain.push(line);
     }
     body.textContent = plain.join("\n").trim() || "…";
     for (const sp of sparkLines) body.appendChild(buildSparkLine(sp));
+    if (nextSteps.length) body.appendChild(buildNextSteps(nextSteps));
   } else if (streamEl !== null) {
     body.appendChild(streamEl); // 流式中的临时元素
   } else {
@@ -271,6 +273,25 @@ function renderMessage(m, streamEl = null) {
     div.appendChild(actions);
   }
   return div;
+}
+
+// ▶ 下一步方向 → 可点选项
+function buildNextSteps(steps) {
+  const wrap = document.createElement("div");
+  wrap.className = "next-steps";
+  for (const st of steps.slice(0, 4)) {
+    const chip = document.createElement("button");
+    chip.className = "next-step-chip";
+    chip.textContent = st;
+    chip.title = "点击填入输入框";
+    chip.onclick = () => {
+      const box = $("#inputBox");
+      box.value = st;
+      box.focus();
+    };
+    wrap.appendChild(chip);
+  }
+  return wrap;
 }
 
 function buildSparkLine(text) {
@@ -563,8 +584,9 @@ function buildDraftCard(d) {
 
   const head = document.createElement("div");
   head.className = "draft-card-head";
+  const contestTag = d.contest ? `<span class="draft-style-tag" style="background:#eef3ee;color:var(--green);border:1px solid #cfe0d2">竞标 · ${escapeHtml(d.contest.label)}</span>` : "";
   head.innerHTML = `
-    <span class="draft-title">✍️ ${escapeHtml(fmtLabel)}${styleLabel && styleLabel !== "自然文风" ? `<span class="draft-style-tag">${escapeHtml(styleLabel.split(" · ")[0])}</span>` : ""}</span>
+    <span class="draft-title">✍️ ${escapeHtml(fmtLabel)}${styleLabel && styleLabel !== "自然文风" ? `<span class="draft-style-tag">${escapeHtml(styleLabel.split(" · ")[0])}</span>` : ""}${contestTag}</span>
     <span class="draft-time">${fmtTime(d.updated_at)} · ${d.content.length} 字${d.history.length ? ` · 改${d.history.length}稿` : ""}${d.polished ? " · 💎" : ""}</span>`;
   head.onclick = () => body.classList.toggle("collapsed");
   card.appendChild(head);
@@ -630,6 +652,23 @@ function buildDraftCard(d) {
   mkBtn("💎 打磨", async () => {
     await polishDraft(d.id, card);
   });
+  mkBtn("🩺 体检", async () => {
+    await runCheckup(d, card);
+  });
+  if (d.contest) {
+    mkBtn("🗑 其它竞标稿", async () => {
+      if (!confirm("保留这一稿，删除同场竞标的其它稿？")) return;
+      try {
+        for (const other of (state.session.drafts || [])) {
+          if (other.contest && other.contest.id === d.contest.id && other.id !== d.id) {
+            await api(`/api/sessions/${s.id}/drafts/${other.id}`, { method: "DELETE" });
+          }
+        }
+        await refreshSessionData();
+        toast("已保留这稿，其它竞标稿已删");
+      } catch (e) { toast(e.message, true); }
+    });
+  }
   mkBtn("📘 存进话题文档", async (e) => {
     await sendDraftToFeishu(d.id, false);
   });
@@ -644,8 +683,60 @@ function buildDraftCard(d) {
     } catch (err) { toast(err.message, true); }
   });
   body.appendChild(actions);
+
+  // 已有体检结果 → 渲染面板
+  if (d.checkup) body.appendChild(buildCheckupPanel(d, card));
+
   card.appendChild(body);
   return card;
+}
+
+// 成稿体检
+async function runCheckup(d, card) {
+  const btn = [...card.querySelectorAll(".draft-actions .btn")].find(b => b.textContent.includes("体检"));
+  if (btn) btn.disabled = true;
+  try {
+    const r = await apiJson(`/api/sessions/${state.session.id}/drafts/${d.id}/checkup`, { method: "POST" });
+    d.checkup = r.checkup;
+    const old = card.querySelector(".checkup-panel");
+    if (old) old.remove();
+    card.querySelector(".draft-card-body").appendChild(buildCheckupPanel(d, card));
+    toast(`体检完成：综合 ${r.checkup.overall} 分`);
+  } catch (e) { toast(e.message, true); }
+  finally { if (btn) btn.disabled = false; }
+}
+
+function buildCheckupPanel(d, card) {
+  const ck = d.checkup;
+  const panel = document.createElement("div");
+  panel.className = "checkup-panel";
+  const bar = (label, val) => `
+    <div class="checkup-row"><span>${label}</span>
+      <span class="score-bar"><span class="score-fill" style="width:${val}%;${val < 60 ? "background:var(--danger)" : val >= 85 ? "background:var(--green)" : ""}"></span></span>
+      <span class="score-num">${val}</span></div>`;
+  panel.innerHTML = `
+    <div class="checkup-head"><b>🩺 成稿体检</b><span class="checkup-overall">${ck.overall}<small style="font-size:11px;color:var(--ink-3)">/100</small></span></div>
+    <div class="checkup-grid">
+      ${bar("人味", ck.ai_flavor)}${bar("具体度", ck.concreteness)}
+      ${bar("节奏", ck.rhythm)}${bar("金句密度", ck.quote_density)}
+    </div>
+    <div class="checkup-lists">
+      <div class="ck-label">❗ 问题</div>
+      <ul>${(ck.issues || []).map(i => `<li>${escapeHtml(i)}</li>`).join("") || "<li>—</li>"}</ul>
+      <div class="ck-label ok">💡 建议</div>
+      <ul>${(ck.suggestions || []).map(i => `<li>${escapeHtml(i)}</li>`).join("") || "<li>—</li>"}</ul>
+    </div>`;
+  if ((ck.suggestions || []).length) {
+    const btn = document.createElement("button");
+    btn.className = "btn btn-primary btn-sm";
+    btn.style.marginTop = "10px";
+    btn.textContent = "💎 按建议打磨";
+    btn.onclick = async () => {
+      await polishDraft(d.id, card, ck.suggestions.join("\n"));
+    };
+    panel.appendChild(btn);
+  }
+  return panel;
 }
 
 // 流式生成 / 改写共用的展示块
@@ -744,15 +835,15 @@ async function sendDraftToFeishu(did, separate) {
   }
 }
 
-// 打磨：编辑红笔二遍稿（流式替换内容）
-async function polishDraft(did, cardEl = null) {
+// 打磨：编辑红笔二遍稿（流式替换内容）；focus=定向重点（体检建议）
+async function polishDraft(did, cardEl = null, focus = "") {
   if (state.draftBusy) return;
   state.draftBusy = true;
   const box = buildStreamBox("💎 编辑打磨中（去 AI 味 · 锻金句）");
   const body = cardEl ? cardEl.querySelector(".draft-card-body") : $("#draftList");
   body.prepend(box);
   try {
-    await sseFetch(`/api/sessions/${state.session.id}/drafts/${did}/polish`, {}, (ev) => {
+    await sseFetch(`/api/sessions/${state.session.id}/drafts/${did}/polish`, { focus }, (ev) => {
       if (ev.t === "delta") {
         box.querySelector(".stream-text").textContent += ev.v;
         box.scrollTop = box.scrollHeight;
@@ -767,6 +858,60 @@ async function polishDraft(did, cardEl = null) {
   } finally {
     box.remove();
     state.draftBusy = false;
+  }
+}
+
+// ⚡ 三稿竞标：同一材料按三种角度各出一稿
+async function generateContest() {
+  if (state.draftBusy) return;
+  if (!state.session) { toast("先新建一个话题", true); return; }
+  if (!state.session.messages.length) { toast("先聊出一些素材，再来竞标", true); return; }
+  state.draftBusy = true;
+  $("#btnContest").disabled = true;
+
+  const boxes = {};
+  const list = $("#draftList");
+  const mkBox = (label) => {
+    const box = buildStreamBox(`⚡ 竞标 · ${label}`);
+    list.prepend(box);
+    return box;
+  };
+  try {
+    await sseFetch(`/api/sessions/${state.session.id}/drafts/contest`, {
+      format: $("#draftFormat").value,
+      tone: $("#draftTone").value,
+      length: $("#draftLength").value,
+      style: $("#draftStyle").value,
+      style_custom: $("#draftStyleCustom") ? $("#draftStyleCustom").value.trim() : "",
+      extra: $("#draftExtra").value.trim(),
+      spark_ids: pickedSparkIds(),
+    }, (ev) => {
+      if (ev.t === "start") {
+        boxes[ev.index] = mkBox(ev.label);
+        boxes[ev.index].scrollIntoView({ behavior: "smooth", block: "nearest" });
+      } else if (ev.t === "delta") {
+        const b = boxes[ev.index];
+        if (b) {
+          b.querySelector(".stream-text").textContent += ev.v;
+          b.scrollTop = b.scrollHeight;
+        }
+      } else if (ev.t === "one_done") {
+        const b = boxes[ev.index];
+        if (b) b.querySelector(".stream-label").textContent = `⚡ 竞标 · ${ev.draft.contest.label} ✅`;
+      } else if (ev.t === "error") {
+        toast(ev.v, true);
+      }
+    });
+    $("#draftComposer").hidden = true;
+    $("#draftExtra").value = "";
+    await refreshSessionData();
+    toast("三稿竞标完成，择优留用 ⚡");
+  } catch (e) {
+    toast("竞标失败：" + e.message, true);
+  } finally {
+    Object.values(boxes).forEach(b => b.remove());
+    state.draftBusy = false;
+    $("#btnContest").disabled = false;
   }
 }
 
@@ -892,6 +1037,38 @@ function renderWeekStats() {
     stat(drafts, "累计文案") +
     stat(chars >= 1000 ? (chars / 1000).toFixed(1) + "k" : chars, "本周产出字数");
   box.hidden = false;
+}
+
+// ───────────────────────── 今日写作提示 ─────────────────────────
+async function loadDailyPrompt(refresh = false) {
+  const card = $("#dailyCard");
+  try {
+    const d = await apiJson(`/api/daily_prompt${refresh ? "?refresh=1" : ""}`);
+    $("#dailyOpening").textContent = d.opening;
+    $("#dailyAngle").textContent = "切入：" + d.angle;
+    $("#dailyDare").textContent = "小挑战：" + d.dare;
+    card.hidden = false;
+    card.dataset.opening = d.opening;
+    card.dataset.angle = d.angle;
+  } catch (e) { card.hidden = true; }
+}
+
+async function startDailyTopic() {
+  const card = $("#dailyCard");
+  const opening = card.dataset.opening || "";
+  const angle = card.dataset.angle || "";
+  if (!opening) return;
+  const seed = `${opening}\n\n（建议切入角度：${angle}。你觉得这个怎么样？想从哪聊起？）`;
+  try {
+    const s = await apiJson("/api/sessions", {
+      method: "POST",
+      body: JSON.stringify({ title: opening.slice(0, 16), mode: "free", seed }),
+    });
+    await loadSessions();
+    await openSession(s.id);
+    toast("今日话题已开 ✍️");
+    $("#inputBox").focus();
+  } catch (e) { toast(e.message, true); }
 }
 
 // ───────────────────────── 飞书 ─────────────────────────
@@ -1185,6 +1362,27 @@ async function init() {
     renderSparkPicker();
   };
   $("#btnGenDraft").onclick = generateDraft;
+  $("#btnContest").onclick = generateContest;
+
+  // 今日写作提示
+  loadDailyPrompt();
+  $("#btnDailyRefresh").onclick = () => loadDailyPrompt(true);
+  $("#btnDailyStart").onclick = startDailyTopic;
+
+  // 话题导出
+  $("#btnExport").onclick = () => {
+    if (!state.session) { toast("先新建一个话题", true); return; }
+    window.open(`/api/sessions/${state.session.id}/export.md`, "_blank");
+  };
+
+  // 灵感库同步飞书
+  $("#btnLibSync").onclick = async () => {
+    try {
+      const r = await apiJson("/api/sparks/sync_feishu", { method: "POST" });
+      toast(r.synced ? `已同步 ${r.synced} 条到飞书 ✅` : "灵感库已是最新");
+      if (r.url) window.open(r.url, "_blank");
+    } catch (e) { toast(e.message, true); }
+  };
 
   $("#btnSettings").onclick = openSettings;
   $("#btnSaveSettings").onclick = saveSettings;

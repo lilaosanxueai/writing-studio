@@ -729,6 +729,123 @@ async def profile_refresh():
 
 
 # ---------------------------------------------------------------------------
+# 今日写作提示 / 话题导出 / 灵感库飞书同步
+# ---------------------------------------------------------------------------
+async def _gen_daily_prompt() -> dict:
+    profile = store.get_profile().get("text", "")
+    sparks = "\n".join(f"- {sp['text']}" for sp in _all_sparks()[:30])
+    recent = "\n".join(f"- {m['title']}" for m in store.list_sessions()[:5])
+    raw = await llm.chat_once(
+        [{"role": "user", "content": prompts.daily_prompt_prompt(profile, sparks, recent)}],
+        model=llm.draft_model, max_tokens=300, temperature=0.9, thinking=False,
+    )
+    data = _extract_json(raw)
+    if not data.get("opening"):
+        raise RuntimeError(f"无法解析: {raw[:80]}")
+    out = {
+        "opening": str(data["opening"]).strip()[:80],
+        "angle": str(data.get("angle", "")).strip()[:40],
+        "dare": str(data.get("dare", "")).strip()[:40],
+    }
+    st = store.load_state()
+    st["daily_prompt"] = {"date": store.today(), "data": out, "ts": store.now_ts()}
+    store.save_state(st)
+    return out
+
+
+@app.get("/api/daily_prompt")
+async def daily_prompt(refresh: str = ""):
+    """今日写作提示（当天缓存；?refresh=1 换一个）"""
+    if refresh != "1":
+        cached = store.load_state().get("daily_prompt")
+        if cached and cached.get("date") == store.today() and cached.get("data"):
+            return cached["data"]
+    try:
+        return await _gen_daily_prompt()
+    except Exception as e:
+        cached = store.load_state().get("daily_prompt")
+        if cached and cached.get("data"):
+            return cached["data"]
+        raise HTTPException(502, f"生成失败: {e}")
+
+
+@app.get("/api/sessions/{sid}/export.md")
+def session_export(sid: str):
+    """整个话题导出为 Markdown（讨论+灵感+小结+文案）"""
+    s = _get_session(sid)
+    cats = store.DISCUSSION_MODES
+    lines = [f"# {s['title']}", ""]
+    ta = s.get("topic_analysis") or {}
+    meta = [f"- 模式：{cats.get(s.get('mode'), s.get('mode'))}"]
+    if ta.get("category"):
+        meta.append(f"- 分类：{store.TOPIC_CATEGORIES.get(ta['category'], ta['category'])}")
+    if ta.get("tags"):
+        meta.append(f"- 关键词：{'、'.join(ta['tags'])}")
+    if isinstance(ta.get("maturity"), int):
+        meta.append(f"- 素材成熟度：{ta['maturity']}/100（{ta.get('maturity_hint', '')}）")
+    lines += meta + ["", "---", ""]
+    if s.get("sparks"):
+        lines += ["## 💡 灵感火花", ""]
+        lines += [f"- {sp['text']}" + (f"（{sp['note']}）" if sp.get("note") else "")
+                  for sp in s["sparks"]]
+        lines += ["", "---", ""]
+    lines += ["## 💬 讨论记录", ""]
+    for m in s.get("messages", []):
+        who = "🙋 我" if m["role"] == "user" else "✍️ 搭档"
+        lines += [f"**{who}**：", "", m["content"], ""]
+    lines += ["---", ""]
+    if s.get("summary"):
+        lines += ["## 📌 讨论小结", "", s["summary"]["text"], "", "---", ""]
+    fmts = prompts.DRAFT_FORMATS
+    styles = prompts.DRAFT_STYLES
+    for d in s.get("drafts", []):
+        label = fmts.get(d["format"], d["format"])
+        stl = styles.get(d.get("style", "none"), "")
+        suffix = f"（{stl}）" if stl and stl != "自然文风" else ""
+        lines += [f"## ✍️ 文案 · {label}{suffix}", "", d["content"], "", "---", ""]
+    md = "\n".join(lines)
+    from urllib.parse import quote as urlquote
+    from fastapi.responses import Response
+    return Response(content=md, media_type="text/markdown; charset=utf-8",
+                    headers={"Content-Disposition":
+                             f"attachment; filename*=UTF-8''{urlquote(s['title'])}.md"})
+
+
+@app.post("/api/sparks/sync_feishu")
+async def sparks_sync_feishu():
+    """把灵感库（跨话题）同步到飞书独立文档「✨ 灵感卡片库」，增量追加"""
+    if not fs.enabled and not feishu.MOCK:
+        raise HTTPException(400, "飞书未配置")
+    st = store.load_state()
+    lib_doc = st.get("sparks_lib_doc") or {}
+    synced_ids = set(st.get("sparks_lib_synced", []))
+    try:
+        if not lib_doc.get("token"):
+            doc = await asyncio.to_thread(fs.create_doc, "✨ 写作共创坊 · 灵感卡片库")
+            lib_doc = {"token": doc["token"], "url": doc["url"]}
+            st["sparks_lib_doc"] = lib_doc
+            await writer.enqueue(lib_doc["token"],
+                                 [feishu.text_block([feishu.run("跨话题沉淀的灵感卡片，按收录顺序排列。", italic=True)]),
+                                  feishu.divider_block()], label="灵感库文档头")
+        all_sp = _all_sparks()
+        fresh = [sp for sp in all_sp if sp["id"] not in synced_ids]
+        blocks = []
+        for sp in fresh:
+            blocks.append(feishu.bullet_block(f"{sp['text']} ——《{sp['session_title']}》"))
+        # 分批入队（每块一条 bullet，append_blocks 内部再按 20 一组）
+        if blocks:
+            await writer.enqueue(lib_doc["token"], blocks, label=f"灵感库×{len(blocks)}")
+        synced_ids.update(sp["id"] for sp in fresh)
+        st["sparks_lib_synced"] = sorted(synced_ids)
+        store.save_state(st)
+        return {"ok": True, "url": lib_doc.get("url", ""), "synced": len(fresh),
+                "total": len(all_sp)}
+    except Exception as e:
+        store.save_state(st)
+        raise HTTPException(502, f"同步失败: {e}")
+
+
+# ---------------------------------------------------------------------------
 # 文案工坊
 # ---------------------------------------------------------------------------
 class DraftBody(BaseModel):
@@ -865,9 +982,14 @@ async def draft_revise(sid: str, did: str, body: ReviseBody):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+class PolishBody(BaseModel):
+    focus: str = ""   # 定向打磨重点（如体检建议）
+
+
 @app.post("/api/sessions/{sid}/drafts/{did}/polish")
-async def draft_polish(sid: str, did: str):
-    """打磨：编辑红笔二遍稿（砍 AI 味、抽象换画面、锻金句、禁升华结尾）"""
+async def draft_polish(sid: str, did: str, body: PolishBody = None):
+    """打磨：编辑红笔二遍稿（砍 AI 味、抽象换画面、锻金句、禁升华结尾）；可带定向重点"""
+    focus = (body.focus if body else "").strip()
     async def gen():
         async with _lock(sid):
             s = _get_session(sid)
@@ -881,6 +1003,7 @@ async def draft_polish(sid: str, did: str):
                     "【讨论材料（事实边界，不得新增）】\n" + _transcript(s, 6000)
                     + "\n【灵感卡片】\n" + _sparks_text(s)
                     + "\n\n【待打磨的原稿】\n" + d["content"]
+                    + ("\n\n【本次重点】优先解决以下问题：\n" + focus if focus else "")
                     + "\n\n请输出打磨后的完整修订稿。"
                 )},
             ]
@@ -908,6 +1031,106 @@ async def draft_polish(sid: str, did: str):
 
 class DraftPatch(BaseModel):
     content: str
+
+
+# ---------------------------------------------------------------------------
+# 三稿竞标 / 成稿体检
+# ---------------------------------------------------------------------------
+class ContestBody(BaseModel):
+    format: str = "wechat"
+    tone: str = "casual"
+    length: str = "medium"
+    style: str = "none"
+    style_custom: str = ""
+    extra: str = ""
+    spark_ids: Optional[list] = None
+
+
+@app.post("/api/sessions/{sid}/drafts/contest")
+async def draft_contest(sid: str, body: ContestBody):
+    """三稿竞标：同一材料按三种角度各出一稿，择优留用"""
+    async def gen():
+        async with _lock(sid):
+            s = _get_session(sid)
+            if not s.get("messages"):
+                yield _sse({"t": "error", "v": "先聊出一些素材，再来竞标"})
+                return
+            contest_id = store.new_id()
+            drafts = []
+            for i, (label, hint) in enumerate(prompts.CONTEST_ANGLES):
+                yield _sse({"t": "start", "index": i, "label": label})
+                extra_i = (body.extra + "\n" if body.extra.strip() else "") + \
+                    f"【本稿角度】{hint}（这是同题竞标的第 {i + 1} 稿，与其它稿的角度必须明显不同）"
+                draft = {
+                    "id": store.new_id(), "format": body.format, "tone": body.tone,
+                    "length": body.length, "style": body.style, "instruction": body.extra,
+                    "content": "", "spark_ids": body.spark_ids,
+                    "contest": {"id": contest_id, "index": i, "label": label},
+                    "created_at": store.now_ts(), "updated_at": store.now_ts(), "history": [],
+                }
+                full = ""
+                try:
+                    async for piece in llm.chat_stream(
+                        _draft_material(s, body.format, body.tone, body.length, extra_i,
+                                        body.spark_ids, body.style, body.style_custom),
+                        model=llm.draft_model, max_tokens=4096,
+                    ):
+                        full += piece
+                        yield _sse({"t": "delta", "v": piece, "index": i})
+                    if not full.strip():
+                        raise RuntimeError("空回复")
+                except Exception as e:
+                    log.error("竞标第%d稿失败: %s", i + 1, e)
+                    yield _sse({"t": "error", "v": f"第 {i + 1} 稿（{label}）失败: {str(e)[:150]}",
+                                "index": i})
+                    continue
+                draft["content"] = full.strip()
+                s.setdefault("drafts", []).insert(0, draft)
+                drafts.append(draft)
+                yield _sse({"t": "one_done", "index": i, "draft": draft})
+            store.save_session(s)
+            yield _sse({"t": "done", "drafts": drafts})
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.post("/api/sessions/{sid}/drafts/{did}/checkup")
+async def draft_checkup(sid: str, did: str):
+    """成稿体检：四维严苛评分 + 问题定位 + 修改建议"""
+    async with _lock(sid):
+        s = _get_session(sid)
+        d = next((x for x in s.get("drafts", []) if x["id"] == did), None)
+        if not d:
+            raise HTTPException(404, "文案不存在")
+        try:
+            raw = await llm.chat_once(
+                [{"role": "user", "content": prompts.checkup_prompt() + d["content"]}],
+                model=llm.draft_model, max_tokens=800, temperature=0.3, thinking=False,
+            )
+            data = _extract_json(raw)
+            if not data:
+                raise RuntimeError(f"无法解析: {raw[:80]}")
+
+            def _score(k):
+                try:
+                    return max(0, min(100, int(data.get(k, 0))))
+                except (TypeError, ValueError):
+                    return 0
+
+            checkup = {
+                "ai_flavor": _score("ai_flavor"), "concreteness": _score("concreteness"),
+                "rhythm": _score("rhythm"), "quote_density": _score("quote_density"),
+                "overall": _score("overall"),
+                "issues": [str(x).strip()[:120] for x in (data.get("issues") or []) if str(x).strip()][:4],
+                "suggestions": [str(x).strip()[:120] for x in (data.get("suggestions") or []) if str(x).strip()][:4],
+                "ts": store.now_ts(),
+            }
+            d["checkup"] = checkup
+            store.save_session(s)
+            return {"checkup": checkup}
+        except Exception as e:
+            raise HTTPException(502, f"体检失败: {e}")
 
 
 @app.patch("/api/sessions/{sid}/drafts/{did}")

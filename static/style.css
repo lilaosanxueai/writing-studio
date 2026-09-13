@@ -303,6 +303,54 @@ input, select, textarea { font-family: inherit; color: var(--ink); }
 .picker-item input { accent-color: var(--accent); margin-top: 3px; flex-shrink: 0; }
 .picker-empty { font-size: 12.5px; color: var(--ink-3); }
 
+/* ─────────── 今日写作提示 ─────────── */
+.daily-card {
+  margin: 18px auto 0; max-width: 460px; text-align: left;
+  background: var(--card); border: 1px solid #dcc27a; border-radius: 14px;
+  padding: 14px 17px; box-shadow: var(--shadow);
+}
+.daily-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.daily-head span { font-size: 13px; color: var(--gold); font-weight: 600; letter-spacing: 1px; }
+.daily-opening { font-size: 14.5px; line-height: 1.7; color: var(--ink); }
+.daily-meta { display: flex; gap: 14px; flex-wrap: wrap; margin: 8px 0 12px; }
+.daily-meta span { font-size: 12px; color: var(--ink-2); }
+.daily-meta span::before { content: "· "; color: var(--gold); }
+
+/* ─────────── 竞标按钮对 ─────────── */
+.btn-pair { display: flex; gap: 8px; }
+.btn-pair .btn { flex: 1; }
+.btn-contest {
+  background: var(--card); border: 1.5px dashed var(--gold); color: #8a6a1e;
+}
+.btn-contest:hover { background: var(--gold-soft); border-color: var(--gold); color: #7a5d18; }
+.btn-contest:disabled { opacity: .5; }
+
+/* ─────────── ▶ 下一步方向 ─────────── */
+.next-steps { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 9px; }
+.next-step-chip {
+  border: 1px solid var(--accent); background: var(--accent-soft); color: var(--accent);
+  font-size: 13px; padding: 4px 13px; border-radius: 15px;
+}
+.next-step-chip:hover { background: var(--accent); color: #fff; }
+
+/* ─────────── 成稿体检 ─────────── */
+.checkup-panel {
+  border: 1px solid var(--line); border-radius: 11px; background: var(--paper);
+  padding: 12px 14px; margin-top: 11px;
+}
+.checkup-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.checkup-head b { font-size: 13.5px; }
+.checkup-overall { font-size: 20px; font-family: "Noto Serif SC", serif; color: var(--accent); }
+.checkup-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 18px; }
+.checkup-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-2); }
+.checkup-row .score-bar { flex: 1; height: 7px; border-radius: 4px; background: var(--paper-2); border: 1px solid var(--line); overflow: hidden; }
+.checkup-row .score-fill { height: 100%; background: var(--accent); border-radius: 4px; }
+.checkup-row .score-num { min-width: 24px; text-align: right; font-variant-numeric: tabular-nums; }
+.checkup-lists { margin-top: 10px; font-size: 13px; line-height: 1.7; }
+.checkup-lists .ck-label { color: var(--danger); font-size: 12px; margin-top: 6px; }
+.checkup-lists .ck-label.ok { color: var(--green); }
+.checkup-lists ul { padding-left: 18px; }
+
 /* ─────────── 语音按钮 / 本周统计 / 画像 ─────────── */
 .btn-mic { height: 46px; font-size: 19px; padding: 0 12px; flex-shrink: 0; }
 .btn-mic.recording { background: var(--danger); border-color: var(--danger); color: #fff; animation: pulse 1.2s infinite; }
