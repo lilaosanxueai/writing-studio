@@ -233,12 +233,18 @@ function renderAnalysis() {
 // ───────────────────────── 消息渲染 ─────────────────────────
 // AI 消息里以 💡 开头的行 → 灵感卡片行
 function renderMessage(m, streamEl = null) {
+  const arena = m.arena;
   const div = document.createElement("div");
-  div.className = `msg ${m.role === "user" ? "user" : "ai"}`;
+  div.className = `msg ${m.role === "user" ? "user" : "ai"}${arena ? ` arena ${arena.side}` : ""}`;
 
   const role = document.createElement("div");
   role.className = "msg-role";
-  role.textContent = m.role === "user" ? "🙋 我" : "✍️ 搭档";
+  if (arena) {
+    const labels = { pro: '<b class="pro-label">⚔️ 正方 · 毒舌主编</b>', con: '<b class="con-label">⚔️ 反方 · 苏格拉底</b>', host: "⚔️ 擂台主持" };
+    role.innerHTML = (labels[arena.side] || "⚔️ 擂台") + (arena.round > 0 ? ` · 第 ${arena.round} 轮` : "");
+  } else {
+    role.textContent = m.role === "user" ? "🙋 我" : "✍️ 搭档";
+  }
   div.appendChild(role);
 
   const body = document.createElement("div");
@@ -272,7 +278,7 @@ function renderMessage(m, streamEl = null) {
     btn.onclick = () => openSparkModal(m.content.slice(0, 500), "user");
     actions.appendChild(btn);
     div.appendChild(actions);
-  } else if (m.role === "assistant" && streamEl === null && m === state.session.messages[state.session.messages.length - 1]) {
+  } else if (m.role === "assistant" && streamEl === null && m === state.session.messages[state.session.messages.length - 1] && !arena) {
     // 最后一条搭档回复：可重答
     const actions = document.createElement("div");
     actions.className = "msg-actions";
@@ -522,6 +528,12 @@ function renderSparks() {
         toast("已删除");
       } catch (e) { toast(e.message, true); }
     };
+    const hang = document.createElement("button");
+    hang.className = "mini-btn";
+    hang.textContent = "🎯 挂起";
+    hang.title = "挂起为选题（想写但还没写）";
+    hang.onclick = () => addBacklog(sp.text);
+    card.querySelector(".card-actions").appendChild(hang);
     list.appendChild(card);
   }
   updateBadges();
@@ -719,6 +731,12 @@ function buildDraftCard(d) {
   mkBtn("🖋 标题", async () => {
     await genTitles(d, card);
   });
+  mkBtn("🖼 配图", async () => {
+    await genCover(d, card);
+  });
+  mkBtn("📤 发布包", async () => {
+    await genPublishPack(d);
+  });
   if (d.contest) {
     mkBtn("🗑 其它竞标稿", async () => {
       if (!confirm("保留这一稿，删除同场竞标的其它稿？")) return;
@@ -750,8 +768,7 @@ function buildDraftCard(d) {
 
   // 转格式行（一稿多发）
   const convertRow = document.createElement("div");
-  convertRow.className = "convert-row";
-  const convSel = document.createElement("select");
+  convertRow.className = "convert-row";  const convSel = document.createElement("select");
   for (const [k, v] of Object.entries(state.config.draft_formats || {})) {
     if (k === d.format || k === "custom") continue;
     const o = document.createElement("option");
@@ -783,13 +800,135 @@ function buildDraftCard(d) {
   convertRow.appendChild(convBtn);
   body.appendChild(convertRow);
 
+  // 版本树（历史版本查看/恢复）
+  if ((d.history || []).length) {
+    const vRow = document.createElement("div");
+    vRow.className = "version-row";
+    const vSel = document.createElement("select");
+    vSel.innerHTML = `<option value="-1">🗄 版本（当前）</option>` +
+      d.history.map((h, i) => `<option value="${i}">v${i + 1} · ${h.length} 字</option>`).reverse().join("");
+    const vBtn = document.createElement("button");
+    vBtn.className = "btn btn-ghost btn-sm";
+    vBtn.textContent = "恢复此版";
+    vBtn.disabled = true;
+    vSel.onchange = () => {
+      const i = +vSel.value;
+      vBtn.disabled = i < 0;
+      if (i >= 0) ta.value = d.history[i];
+      else ta.value = d.content;
+    };
+    vBtn.onclick = async () => {
+      const i = +vSel.value;
+      if (i < 0) return;
+      try {
+        await api(`/api/sessions/${s.id}/drafts/${d.id}`, {
+          method: "PATCH", body: JSON.stringify({ content: d.history[i] }),
+        });
+        await refreshSessionData();
+        toast(`已恢复 v${i + 1}（当前版已存入历史）`);
+      } catch (e) { toast(e.message, true); }
+    };
+    vRow.appendChild(vSel);
+    vRow.appendChild(vBtn);
+    body.appendChild(vRow);
+  }
+
   // 已有体检结果 → 渲染面板
   if (d.checkup) body.appendChild(buildCheckupPanel(d, card));
   // 已有标题候选 → 渲染面板
   if (d.titles && d.titles.length) body.appendChild(buildTitlePanel(d, card));
+  // 已有配图 → 渲染面板
+  if (d.cover_prompt || d.cover_image) body.appendChild(buildCoverPanel(d, card));
 
   card.appendChild(body);
   return card;
+}
+
+// 智能配图
+async function genCover(d, card) {
+  const btn = [...card.querySelectorAll(".draft-actions .btn")].find(b => b.textContent.includes("配图"));
+  if (btn) btn.disabled = true;
+  try {
+    const r = await apiJson(`/api/sessions/${state.session.id}/drafts/${d.id}/cover`, { method: "POST" });
+    d.cover_prompt = r.cover_prompt;
+    d.cover_style = r.style_note;
+    d.cover_image = null;
+    const old = card.querySelector(".cover-panel");
+    if (old) old.remove();
+    card.querySelector(".draft-card-body").appendChild(buildCoverPanel(d, card));
+    toast(r.image_pending ? "提示词已生成，图片后台生成中（约 1~3 分钟）🖼" : "封面提示词已生成（设置里配 APIMart key 可直接出图）");
+    if (r.image_pending) pollCoverImage(d.id, card);
+  } catch (e) { toast(e.message, true); }
+  finally { if (btn) btn.disabled = false; }
+}
+
+function pollCoverImage(did, card) {
+  let tries = 0;
+  const timer = setInterval(async () => {
+    tries += 1;
+    if (tries > 36) { clearInterval(timer); return; }
+    try {
+      const s = await apiJson(`/api/sessions/${state.session.id}`);
+      const d = (s.drafts || []).find(x => x.id === did);
+      if (d && d.cover_image) {
+        clearInterval(timer);
+        const old = card.querySelector(".cover-panel");
+        if (old) old.remove();
+        card.querySelector(".draft-card-body").appendChild(buildCoverPanel(d, card));
+        toast("封面图已生成 🖼");
+      }
+    } catch (e) { clearInterval(timer); }
+  }, 5000);
+}
+
+function buildCoverPanel(d, card) {
+  const panel = document.createElement("div");
+  panel.className = "cover-panel";
+  panel.innerHTML = `
+    <div class="ck-label" style="color:var(--gold);margin-bottom:6px">🖼 封面配图${d.cover_style ? " · " + escapeHtml(d.cover_style) : ""}</div>
+    <div class="cover-prompt">${escapeHtml(d.cover_prompt || "")}</div>
+    ${d.cover_image ? `<img src="${d.cover_image}" alt="封面图">` : ""}`;
+  const copyBtn = document.createElement("button");
+  copyBtn.className = "btn btn-ghost btn-sm";
+  copyBtn.style.marginTop = "8px";
+  copyBtn.textContent = "📋 复制提示词";
+  copyBtn.onclick = async () => {
+    await navigator.clipboard.writeText(d.cover_prompt || "");
+    toast("已复制，可去任意画图工具使用");
+  };
+  panel.appendChild(copyBtn);
+  return panel;
+}
+
+// 发布包
+async function genPublishPack(d) {
+  showModal("#modalPublish");
+  $("#publishBody").textContent = "生成中…";
+  try {
+    const r = await apiJson(`/api/sessions/${state.session.id}/drafts/${d.id}/publish_pack`, { method: "POST" });
+    const p = r.pack;
+    const row = (label, val) => `<div style="margin:10px 0">
+      <div class="ck-label" style="color:var(--accent)">${label}</div>
+      <div style="line-height:1.7">${val}</div></div>`;
+    $("#publishBody").innerHTML =
+      row("标题候选", p.titles.map(t => `· ${escapeHtml(t)}`).join("<br>")) +
+      row("摘要（分享卡片）", escapeHtml(p.summary)) +
+      row("标签", p.tags.map(t => "#" + escapeHtml(t)).join(" ")) +
+      row("公众号建议", escapeHtml(p.wechat_tip)) +
+      row("小红书建议", escapeHtml(p.xhs_tip)) +
+      row("封面提示词", escapeHtml(d.cover_prompt || "（点稿卡「🖼 配图」先生成）"));
+    const copyAll = document.createElement("button");
+    copyAll.className = "btn btn-primary btn-sm";
+    copyAll.textContent = "📋 复制整套发布包";
+    copyAll.onclick = async () => {
+      await navigator.clipboard.writeText(
+        `标题候选：\n${p.titles.map(t => "- " + t).join("\n")}\n\n摘要：${p.summary}\n\n标签：${p.tags.map(t => "#" + t).join(" ")}\n\n公众号：${p.wechat_tip}\n小红书：${p.xhs_tip}\n\n封面提示词：${d.cover_prompt || ""}`);
+      toast("已复制整套发布包 📋");
+    };
+    $("#publishBody").appendChild(copyAll);
+  } catch (e) {
+    $("#publishBody").textContent = "生成失败：" + e.message;
+  }
 }
 
 // 标题工坊
@@ -1352,6 +1491,127 @@ async function runForge() {
   }
 }
 
+// ⚔️ 观点擂台：双人格辩论
+async function runArena() {
+  if (state.sending) return;
+  if (!state.session) { toast("先新建一个话题", true); return; }
+  if (!state.session.messages.length) { toast("先聊出核心观点，再开擂台", true); return; }
+  state.sending = true;
+  $("#btnArena").disabled = true;
+  $("#chatEmpty").style.display = "none";
+  const list = $("#chatList");
+  const boxes = {};
+  try {
+    await sseFetch(`/api/sessions/${state.session.id}/arena`, { rounds: 3 }, (ev) => {
+      if (ev.t === "msg") {
+        Object.values(boxes).forEach(b => b.remove());
+        list.appendChild(renderMessage(ev.message));
+        scrollChatBottom();
+      } else if (ev.t === "start") {
+        const holder = renderMessage({ role: "assistant", arena: ev, content: "" },
+          (() => {
+            const t = document.createElement("span");
+            t.className = "typing";
+            t.innerHTML = "<i></i><i></i><i></i>";
+            return t;
+          })());
+        list.appendChild(holder);
+        boxes[ev.side + ev.round] = holder;
+        scrollChatBottom();
+      } else if (ev.t === "delta") {
+        const holder = boxes[ev.side + (Object.keys(boxes).length)];
+        const target = Object.values(boxes).pop();
+        if (target) {
+          const body = target.querySelector(".msg-body");
+          const typing = body.querySelector(".typing");
+          if (typing) typing.remove();
+          body.textContent = (body.textContent || "") + ev.v;
+          scrollChatBottom();
+        }
+      } else if (ev.t === "error") {
+        toast(ev.v, true);
+      }
+    });
+    await refreshSessionData();
+    toast("擂台结束，插话支持你的一方 ⚔️");
+  } catch (e) {
+    toast("擂台失败：" + e.message, true);
+    refreshSessionData();
+  } finally {
+    Object.values(boxes).forEach(b => b.remove());
+    state.sending = false;
+    $("#btnArena").disabled = false;
+  }
+}
+
+// ───────────────────────── 选题库 ─────────────────────────
+let backlogItems = [];
+
+async function loadBacklog() {
+  try {
+    const r = await apiJson("/api/backlog");
+    backlogItems = r.items;
+    renderBacklog();
+  } catch (e) { /* 忽略 */ }
+}
+
+function renderBacklog() {
+  const box = $("#backlogBox");
+  const list = $("#backlogList");
+  if (!state.sessions.length && !backlogItems.length) { box.hidden = true; return; }
+  box.hidden = false;
+  list.innerHTML = "";
+  if (!backlogItems.length) {
+    list.innerHTML = `<span style="font-size:12.5px;color:var(--ink-3)">空的——聊到想写但没时间展开的，点灵感的「🎯 挂起」放进来</span>`;
+    return;
+  }
+  for (const item of backlogItems) {
+    const row = document.createElement("div");
+    row.className = "backlog-item";
+    row.innerHTML = `<span class="bk-title">${escapeHtml(item.title)}</span>` +
+      (item.note ? `<span class="bk-note">${escapeHtml(item.note)}</span>` : "");
+    const go = document.createElement("button");
+    go.className = "mini-btn";
+    go.textContent = "开聊";
+    go.onclick = async () => {
+      try {
+        const s = await apiJson("/api/sessions", {
+          method: "POST",
+          body: JSON.stringify({ title: item.title, mode: "free",
+            seed: `咱们之前挂起过一个选题：「${item.title}」。今天想从哪聊起？` }),
+        });
+        await api(`/api/backlog/${item.id}`, { method: "DELETE" });
+        await loadBacklog();
+        await loadSessions();
+        await openSession(s.id);
+        toast("选题已开聊 ✍️");
+      } catch (e) { toast(e.message, true); }
+    };
+    const del = document.createElement("button");
+    del.className = "mini-btn danger";
+    del.textContent = "✕";
+    del.onclick = async () => {
+      try {
+        await api(`/api/backlog/${item.id}`, { method: "DELETE" });
+        await loadBacklog();
+      } catch (e) { toast(e.message, true); }
+    };
+    row.appendChild(go);
+    row.appendChild(del);
+    list.appendChild(row);
+  }
+}
+
+async function addBacklog(title) {
+  if (!title.trim()) return;
+  try {
+    await api("/api/backlog", { method: "POST", body: JSON.stringify({ title }) });
+    $("#backlogInput").value = "";
+    await loadBacklog();
+    toast("已挂起为选题 🎯");
+  } catch (e) { toast(e.message, true); }
+}
+
 // ───────────────────────── 我的文风 / 看板 / 主题 / 快捷键 ─────────────────────────
 async function loadUserStyle() {
   try {
@@ -1906,11 +2166,15 @@ async function init() {
     window.open(`/api/sessions/${state.session.id}/export.docx`, "_blank");
   };
 
-  // 目标 / 导入 / 锻造 / 看板 / 主题
+  // 目标 / 导入 / 锻造 / 看板 / 主题 / 擂台 / 选题库
   loadGoals();
+  loadBacklog();
   initTheme();
   initHotkeys();
   $("#goalChip").onclick = openSettings;
+  $("#btnArena").onclick = runArena;
+  $("#backlogAdd").onclick = () => addBacklog($("#backlogInput").value.trim());
+  $("#backlogInput").onkeydown = (e) => { if (e.key === "Enter") $("#backlogAdd").click(); };
   $("#btnImport").onclick = () => showModal("#modalImport");
   $("#btnImportParse").onclick = parseImport;
   $("#btnImportCreate").onclick = createFromImport;

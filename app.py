@@ -63,6 +63,10 @@ DEFAULT_CONFIG = {
         "lan": False,
         "access_token": "",
     },
+    "image": {
+        "api_key": "",                       # APIMart GPT-Image-2；留空=配图只出提示词
+        "base_url": "https://api.apimart.ai/v1",
+    },
 }
 
 
@@ -431,6 +435,10 @@ def get_config():
             "enabled": fs.enabled,
         },
         "has_user_style": bool(store.load_state().get("user_style_card", {}).get("text")),
+        "image": {
+            "has_key": bool(CONFIG.get("image", {}).get("api_key")),
+            "base_url": CONFIG.get("image", {}).get("base_url", ""),
+        },
         "server": {"lan": bool(CONFIG.get("server", {}).get("lan"))},
         "modes": store.DISCUSSION_MODES,
         "personas": prompts.PARTNER_PERSONAS,
@@ -446,6 +454,7 @@ def get_config():
 class ConfigUpdate(BaseModel):
     llm: Optional[dict] = None
     feishu: Optional[dict] = None
+    image: Optional[dict] = None
 
 
 @app.post("/api/config")
@@ -461,6 +470,8 @@ async def update_config(body: ConfigUpdate):
             st.pop("folder_token", None)
             st.pop("domain", None)
             store.save_state(st)
+    if body.image:
+        CONFIG.setdefault("image", {}).update({k: v for k, v in body.image.items() if v is not None})
     save_config(CONFIG)
     llm.update(CONFIG["llm"])
     fs.update(CONFIG["feishu"])
@@ -793,8 +804,11 @@ async def _gen_daily_prompt() -> dict:
     profile = store.get_profile().get("text", "")
     sparks = "\n".join(f"- {sp['text']}" for sp in _all_sparks()[:30])
     recent = "\n".join(f"- {m['title']}" for m in store.list_sessions()[:5])
+    backlog_items = store.load_state().get("topic_backlog", [])
+    backlog = "\n".join(f"- {x['title']}" + (f"（{x['note']}）" if x.get("note") else "")
+                        for x in backlog_items[:10])
     raw = await llm.chat_once(
-        [{"role": "user", "content": prompts.daily_prompt_prompt(profile, sparks, recent)}],
+        [{"role": "user", "content": prompts.daily_prompt_prompt(profile, sparks, recent, backlog)}],
         model=llm.draft_model, max_tokens=300, temperature=0.9, thinking=False,
     )
     data = _extract_json(raw)
@@ -1713,6 +1727,106 @@ def dashboard():
     }
 
 
+# ---------------------------------------------------------------------------
+# 观点擂台 / 选题库 / 版本历史 / 智能配图 / 发布包
+# ---------------------------------------------------------------------------
+class ArenaBody(BaseModel):
+    rounds: int = 3
+
+
+@app.post("/api/sessions/{sid}/arena")
+async def arena(sid: str, body: ArenaBody):
+    """观点擂台：双人格辩论（正方毒舌主编 vs 反方苏格拉底），流式写入消息流"""
+    async def gen():
+        async with _lock(sid):
+            s = _get_session(sid)
+            if not s.get("messages"):
+                yield _sse({"t": "error", "v": "先聊出核心观点，再开擂台"})
+                return
+            topic = s.get("topic") or s["title"]
+            rounds = max(1, min(body.rounds or 3, 5))
+            opener = {"role": "assistant", "content": f"⚔️ 观点擂台开场：就「{topic}」",
+                      "arena": {"side": "host", "round": 0}, "ts": store.now_ts()}
+            s["messages"].append(opener)
+            store.save_session(s)
+            yield _sse({"t": "msg", "message": opener})
+            for r in range(1, rounds + 1):
+                for side in ("pro", "con"):
+                    label, _persona = prompts.ARENA_SIDES[side]
+                    # 最近的擂台发言作为对手上一轮
+                    recent = [m["content"] for m in s["messages"][-6:]]
+                    msgs = [
+                        {"role": "system", "content": prompts.arena_system_prompt(side, topic)},
+                        {"role": "user", "content": (
+                            "【讨论材料】\n" + _transcript(s, 4000)
+                            + "\n\n【台上最近的发言（最后一条是你的对手】\n"
+                            + "\n---\n".join(recent[-3:])
+                            + f"\n\n这是第 {r} 轮，轮到你（{label}）发言。"
+                        )},
+                    ]
+                    yield _sse({"t": "start", "side": side, "round": r, "label": label})
+                    full = ""
+                    try:
+                        async for piece in llm.chat_stream(msgs, model=llm.model,
+                                                           temperature=0.9, max_tokens=400):
+                            full += piece
+                            yield _sse({"t": "delta", "v": piece, "side": side})
+                    except Exception as e:
+                        yield _sse({"t": "error", "v": f"{label}发言失败: {str(e)[:120]}"})
+                        continue
+                    msg = {"role": "assistant", "content": full.strip(),
+                           "arena": {"side": side, "round": r}, "ts": store.now_ts()}
+                    s["messages"].append(msg)
+                    store.save_session(s)
+                    yield _sse({"t": "msg", "message": msg})
+            # 收尾：主持人总结
+            closing = {"role": "assistant",
+                       "content": "⚔️ 本轮擂台结束。想支持哪一方，直接插话开聊；再点「擂台」可加赛。",
+                       "arena": {"side": "host", "round": rounds + 1}, "ts": store.now_ts()}
+            s["messages"].append(closing)
+            store.save_session(s)
+            yield _sse({"t": "msg", "message": closing, "done": True})
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ---- 选题库 --------------------------------------------------------------
+class BacklogBody(BaseModel):
+    title: str
+    note: str = ""
+    from_: str = ""
+
+
+@app.get("/api/backlog")
+def backlog_list():
+    return {"items": store.load_state().get("topic_backlog", [])}
+
+
+@app.post("/api/backlog")
+def backlog_add(body: BacklogBody):
+    st = store.load_state()
+    item = {"id": store.new_id(), "title": body.title.strip()[:40],
+            "note": body.note.strip()[:100], "from": body.from_, "ts": store.now_ts()}
+    if not item["title"]:
+        raise HTTPException(400, "选题不能为空")
+    st.setdefault("topic_backlog", []).append(item)
+    store.save_state(st)
+    return item
+
+
+@app.delete("/api/backlog/{bid}")
+def backlog_delete(bid: str):
+    st = store.load_state()
+    before = len(st.get("topic_backlog", []))
+    st["topic_backlog"] = [x for x in st.get("topic_backlog", []) if x["id"] != bid]
+    if len(st["topic_backlog"]) == before:
+        raise HTTPException(404, "选题不存在")
+    store.save_state(st)
+    return {"ok": True}
+
+
+# ---- 版本历史（任何内容修改自动入历史） ----------------------------------
 class DraftPatch(BaseModel):
     content: str
 
@@ -1723,10 +1837,141 @@ def draft_save_edit(sid: str, did: str, body: DraftPatch):
     d = next((x for x in s.get("drafts", []) if x["id"] == did), None)
     if not d:
         raise HTTPException(404, "文案不存在")
+    if body.content != d["content"]:
+        d["history"].append(d["content"])
+        d["history"] = [h for i, h in enumerate(d["history"]) if h != body.content or i == len(d["history"]) - 1]
     d["content"] = body.content
     d["updated_at"] = store.now_ts()
     store.save_session(s)
     return d
+
+
+# ---- 智能配图（无 key 出提示词；有 APIMart key 直接出图） -----------------
+async def _gen_cover_image(did: str, prompt_cn: str):
+    """后台生成封面图：提交 APIMart 任务 → 轮询 → 下载到 data/images/"""
+    import urllib.request as _u
+    key = (CONFIG.get("image", {}).get("api_key") or "").strip()
+    if not key:
+        return
+    try:
+        base = (CONFIG.get("image", {}).get("base_url") or "https://api.apimart.ai/v1").rstrip("/")
+        import os
+        os.makedirs(store.DATA_DIR + "/images", exist_ok=True)
+        req = _u.Request(base + "/images/generations",
+                         data=json.dumps({"model": "gpt-image-2", "prompt": prompt_cn,
+                                          "size": "16:9", "n": 1}).encode(),
+                         headers={"Authorization": "Bearer " + key,
+                                  "Content-Type": "application/json; charset=utf-8"},
+                         method="POST")
+        with _u.urlopen(req, timeout=60) as r:
+            data = json.loads(r.read().decode())
+        task_id = (data.get("data") or [{}])[0].get("task_id") or data.get("task_id")
+        if not task_id:
+            raise RuntimeError(str(data)[:120])
+        import time as _t
+        for _ in range(120):  # 最多等 6 分钟
+            await asyncio.sleep(3)
+            req = _u.Request(base + f"/tasks/{task_id}",
+                             headers={"Authorization": "Bearer " + key}, method="GET")
+            with _u.urlopen(req, timeout=30) as r:
+                t = json.loads(r.read().decode())
+            status = (t.get("data") or t.get("status") or "")
+            if isinstance(status, dict):
+                status = status.get("status", "")
+            if str(status).lower() in ("succeeded", "success", "completed"):
+                url = ((t.get("data") or {}).get("url") if isinstance(t.get("data"), dict)
+                       else (t.get("data") or [{}])[0].get("url") if isinstance(t.get("data"), list)
+                       else t.get("url"))
+                if not url:
+                    raise RuntimeError("完成但拿不到图片 URL")
+                fn = f"cover_{did[:8]}_{int(store.now_ts())}.png"
+                path = store.DATA_DIR + "/images/" + fn
+                dreq = _u.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+                with _u.urlopen(dreq, timeout=120) as r2, open(path, "wb") as f:
+                    f.write(r2.read())
+                # 写回稿卡
+                for meta in store.list_sessions():
+                    s2 = store.load_session(meta["id"])
+                    if not s2:
+                        continue
+                    for dd in s2.get("drafts", []):
+                        if dd["id"] == did:
+                            dd["cover_image"] = "/data/images/" + fn
+                            store.save_session(s2)
+                            log.info("封面图已生成: %s", fn)
+                            return
+                return
+            if str(status).lower() in ("failed", "error", "cancelled"):
+                raise RuntimeError(f"任务失败: {status}")
+        raise RuntimeError("轮询超时")
+    except Exception as e:
+        log.warning("封面图生成失败: %s", e)
+
+
+@app.post("/api/sessions/{sid}/drafts/{did}/cover")
+async def draft_cover(sid: str, did: str):
+    """配图：LLM 出封面提示词；配置了 image key 则后台出图"""
+    async with _lock(sid):
+        s = _get_session(sid)
+        d = next((x for x in s.get("drafts", []) if x["id"] == did), None)
+        if not d:
+            raise HTTPException(404, "文案不存在")
+        try:
+            raw = await llm.chat_once(
+                [{"role": "user", "content": prompts.cover_prompt() + d["content"][:3000]}],
+                model=llm.fast_model, max_tokens=300, temperature=0.8, thinking=False,
+            )
+            data = _extract_json(raw)
+            cp = str(data.get("cover_prompt", "")).strip()
+            if not cp:
+                raise RuntimeError(f"无法解析: {raw[:80]}")
+            d["cover_prompt"] = cp
+            d["cover_style"] = str(data.get("style_note", "")).strip()[:20]
+            d.pop("cover_image", None)
+            store.save_session(s)
+        except Exception as e:
+            raise HTTPException(502, f"配图提示词生成失败: {e}")
+    has_key = bool((CONFIG.get("image", {}).get("api_key") or "").strip())
+    if has_key:
+        task = asyncio.create_task(_gen_cover_image(did, cp))
+        _bg_tasks.add(task)
+        task.add_done_callback(_bg_tasks.discard)
+    return {"cover_prompt": cp, "style_note": d.get("cover_style", ""),
+            "image_pending": has_key, "image": None}
+
+
+# ---- 发布包 --------------------------------------------------------------
+@app.post("/api/sessions/{sid}/drafts/{did}/publish_pack")
+async def draft_publish_pack(sid: str, did: str):
+    async with _lock(sid):
+        s = _get_session(sid)
+        d = next((x for x in s.get("drafts", []) if x["id"] == did), None)
+        if not d:
+            raise HTTPException(404, "文案不存在")
+        try:
+            raw = await llm.chat_once(
+                [{"role": "user", "content": prompts.publish_pack_prompt() + d["content"][:4000]}],
+                model=llm.draft_model, max_tokens=700, temperature=0.7, thinking=False,
+            )
+            data = _extract_json(raw)
+            pack = {
+                "titles": [str(t).strip()[:24] for t in (data.get("title_candidates") or []) if str(t).strip()][:3],
+                "summary": str(data.get("summary", "")).strip()[:80],
+                "tags": [str(t).strip().lstrip("#")[:12] for t in (data.get("tags") or []) if str(t).strip()][:5],
+                "wechat_tip": str(data.get("wechat_tip", "")).strip()[:60],
+                "xhs_tip": str(data.get("xhs_tip", "")).strip()[:60],
+            }
+            if not pack["titles"]:
+                raise RuntimeError(f"无法解析: {raw[:80]}")
+            d["publish_pack"] = pack
+            store.save_session(s)
+            return {"pack": pack}
+        except Exception as e:
+            raise HTTPException(502, f"发布包生成失败: {e}")
+
+
+class DraftPatch(BaseModel):
+    content: str
 
 
 @app.delete("/api/sessions/{sid}/drafts/{did}")
@@ -1851,6 +2096,9 @@ async def feishu_resync(sid: str):
 # 静态资源 & 启动
 # ---------------------------------------------------------------------------
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+_IMAGES_DIR = BASE_DIR / "data" / "images"
+_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/data/images", StaticFiles(directory=str(_IMAGES_DIR)), name="images")
 
 
 if __name__ == "__main__":

@@ -341,6 +341,31 @@ input, select, textarea { font-family: inherit; color: var(--ink); }
 .ext-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }
 .ext-chip button { border: none; background: transparent; color: inherit; cursor: pointer; padding: 0; font-size: 13px; }
 
+/* ─────────── 观点擂台 ─────────── */
+.msg.arena { max-width: 92%; }
+.msg.arena.pro .msg-body { border-left: 3px solid var(--accent); background: var(--accent-soft); }
+.msg.arena.con .msg-body { border-left: 3px solid #3a6ea5; background: #eef3f9; }
+[data-theme="dark"] .msg.arena.con .msg-body { background: #26303c; }
+.msg.arena.host .msg-body { background: var(--paper-2); border-style: dashed; color: var(--ink-3); font-size: 13px; }
+.msg.arena .msg-role b.pro-label { color: var(--accent); }
+.msg.arena .msg-role b.con-label { color: #3a6ea5; }
+
+/* ─────────── 选题库 ─────────── */
+.backlog-box { margin: 16px auto 0; max-width: 460px; text-align: left; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 13px 16px; }
+.backlog-item { display: flex; align-items: center; gap: 8px; padding: 7px 2px; border-bottom: 1px dashed var(--line); font-size: 13.5px; }
+.backlog-item:last-of-type { border-bottom: none; }
+.backlog-item .bk-title { flex: 1; }
+.backlog-item .bk-note { font-size: 11.5px; color: var(--ink-3); }
+.backlog-add { display: flex; gap: 8px; margin-top: 10px; }
+.backlog-add input { flex: 1; padding: 7px 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--paper); font-size: 13px; outline: none; }
+
+/* ─────────── 配图面板 / 版本下拉 ─────────── */
+.cover-panel { border: 1px solid var(--line); border-radius: 11px; background: var(--paper); padding: 12px 14px; margin-top: 11px; }
+.cover-panel img { max-width: 100%; border-radius: 9px; margin-top: 9px; display: block; }
+.cover-prompt { font-size: 13.5px; line-height: 1.7; color: var(--ink-2); }
+.version-row { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
+.version-row select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); font-size: 12.5px; flex: 1; }
+
 /* ─────────── 深色模式 ─────────── */
 [data-theme="dark"] {
   --paper: #201b16;

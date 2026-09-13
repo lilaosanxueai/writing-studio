@@ -44,6 +44,7 @@
         <label class="mode-label">搭档</label>
         <select id="personaSelect" title="搭档人格"></select>
         <button id="btnAnalyze" class="btn btn-ghost btn-sm" title="重新分析话题分类">🏷 分析</button>
+        <button id="btnArena" class="btn btn-ghost btn-sm" title="双人格辩论：正方毒舌主编 vs 反方苏格拉底">⚔️ 擂台</button>
         <button id="btnSummary" class="btn btn-ghost">📌 小结</button>
         <button id="btnExport" class="btn btn-ghost btn-sm" title="导出整个话题为 Markdown">⬇ MD</button>
         <button id="btnExportDocx" class="btn btn-ghost btn-sm" title="导出为 Word 文档">📄 Word</button>
@@ -66,6 +67,14 @@
           <button id="btnDailyStart" class="btn btn-primary btn-sm">✍️ 就聊这个</button>
         </div>
         <div id="weekStats" class="week-stats" hidden></div>
+        <div id="backlogBox" class="backlog-box" hidden>
+          <div class="daily-head"><span>🎯 选题库（想写但还没写）</span></div>
+          <div id="backlogList"></div>
+          <div class="backlog-add">
+            <input id="backlogInput" placeholder="记一个想写的选题…">
+            <button id="backlogAdd" class="btn btn-ghost btn-sm">＋ 挂起</button>
+          </div>
+        </div>
         <div class="empty-suggestions">
           <button class="chip-suggest" data-fill="我最近想写一篇关于「为什么人越来越不想社交」的东西，但只有个模糊感觉">想写「为什么人越来越不想社交」</button>
           <button class="chip-suggest" data-fill="帮我把「AI 时代还要不要学写作」这个话题聊透，我想写篇公众号">聊透「AI 时代还要不要学写作」</button>
@@ -311,6 +320,17 @@
     <div class="modal-actions">
       <button class="btn btn-ghost" data-close>取消</button>
       <button id="btnSaveSpark" class="btn btn-primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ 发布包弹窗 ═══════════ -->
+<div id="modalPublish" class="modal-mask" hidden>
+  <div class="modal modal-wide">
+    <h3>📤 发布包</h3>
+    <div id="publishBody" class="summary-body">生成中…</div>
+    <div class="modal-actions">
+      <button class="btn btn-primary" data-close>关闭</button>
     </div>
   </div>
 </div>
