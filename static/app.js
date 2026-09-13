@@ -272,8 +272,57 @@ function renderMessage(m, streamEl = null) {
     btn.onclick = () => openSparkModal(m.content.slice(0, 500), "user");
     actions.appendChild(btn);
     div.appendChild(actions);
+  } else if (m.role === "assistant" && streamEl === null && m === state.session.messages[state.session.messages.length - 1]) {
+    // 最后一条搭档回复：可重答
+    const actions = document.createElement("div");
+    actions.className = "msg-actions";
+    const btn = document.createElement("button");
+    btn.className = "msg-action";
+    btn.textContent = "🔄 重答";
+    btn.title = "丢弃这条回复，让搭档重新说";
+    btn.onclick = regenLast;
+    actions.appendChild(btn);
+    div.appendChild(actions);
   }
   return div;
+}
+
+async function regenLast() {
+  if (state.sending) return;
+  state.sending = true;
+  setSending(true);
+  const list = $("#chatList");
+  // 移除最后一条 AI 消息节点，加 typing 占位
+  const msgs = list.querySelectorAll(".msg");
+  if (msgs.length) msgs[msgs.length - 1].remove();
+  const typing = document.createElement("span");
+  typing.className = "typing";
+  typing.innerHTML = "<i></i><i></i><i></i>";
+  const aiDiv = renderMessage({ role: "assistant", content: "" }, typing);
+  list.appendChild(aiDiv);
+  scrollChatBottom();
+  let full = "";
+  try {
+    await sseFetch(`/api/sessions/${state.session.id}/regen`, {}, (ev) => {
+      if (ev.t === "delta") {
+        full += ev.v;
+        const body = aiDiv.querySelector(".msg-body");
+        if (typing.parentNode) typing.remove();
+        body.textContent = full;
+        scrollChatBottom();
+      } else if (ev.t === "error") {
+        throw new Error(ev.v);
+      }
+    });
+    await refreshSessionData();
+    setTimeout(refreshFeishu, 2500);
+  } catch (e) {
+    toast("重答失败：" + e.message, true);
+    refreshSessionData();
+  } finally {
+    state.sending = false;
+    setSending(false);
+  }
 }
 
 // ▶ 下一步方向 → 可点选项
@@ -535,22 +584,26 @@ function fillDraftOptions() {
   // 风格下拉：带分组时用 optgroup（通用 / 图文博主 / 视频博主）
   const styleSel = $("#draftStyle");
   const groups = state.config.draft_style_groups;
+  const styleNames = Object.assign({}, state.config.draft_styles, { mine: "我的文风" });
   if (styleSel) {
     styleSel.innerHTML = "";
     if (groups) {
-      for (const [gname, keys] of Object.entries(groups)) {
+      // 已蒸馏文风卡时，通用组追加「我的文风」
+      const groups2 = state.config.has_user_style
+        ? { ...groups, "通用": [...(groups["通用"] || []), "mine"] } : groups;
+      for (const [gname, keys] of Object.entries(groups2)) {
         const og = document.createElement("optgroup");
         og.label = gname;
         for (const k of keys) {
-          if (!state.config.draft_styles[k]) continue;
+          if (!styleNames[k]) continue;
           const o = document.createElement("option");
-          o.value = k; o.textContent = state.config.draft_styles[k];
+          o.value = k; o.textContent = styleNames[k];
           og.appendChild(o);
         }
         if (og.children.length) styleSel.appendChild(og);
       }
       // 分组没覆盖到的兜底
-      for (const [k, v] of Object.entries(state.config.draft_styles || {})) {
+      for (const [k, v] of Object.entries(styleNames)) {
         if (!styleSel.querySelector(`option[value="${k}"]`)) {
           const o = document.createElement("option");
           o.value = k; o.textContent = v;
@@ -1299,6 +1352,123 @@ async function runForge() {
   }
 }
 
+// ───────────────────────── 我的文风 / 看板 / 主题 / 快捷键 ─────────────────────────
+async function loadUserStyle() {
+  try {
+    const r = await apiJson("/api/style_learn");
+    const card = $("#styleCard");
+    card.value = r.card || "";
+    card.hidden = !r.card;
+    $("#btnStyleClear").hidden = !r.card;
+    $("#styleSample").placeholder = r.card
+      ? "已有文风卡（下方可见）。粘贴新样本可重新蒸馏"
+      : "粘贴 2~3 段你过去写的东西（文章、朋友圈、日记都行，越长越准）";
+  } catch (e) { /* 忽略 */ }
+}
+
+async function learnStyle() {
+  const text = $("#styleSample").value.trim();
+  if (text.length < 100) { toast("样本太短（至少 100 字）", true); return; }
+  $("#btnStyleLearn").disabled = true;
+  $("#btnStyleLearn").textContent = "蒸馏中…";
+  try {
+    const r = await apiJson("/api/style_learn", { method: "POST", body: JSON.stringify({ text }) });
+    await loadUserStyle();
+    state.config = await apiJson("/api/config");
+    fillDraftOptions();
+    $("#styleSample").value = "";
+    toast("文风卡已蒸馏，文案风格里可选「我的文风」🖋");
+  } catch (e) { toast(e.message, true); }
+  finally { $("#btnStyleLearn").disabled = false; $("#btnStyleLearn").textContent = "🖋 蒸馏文风"; }
+}
+
+const DASH_COLORS = ["#b3542e", "#4d7c5a", "#b98a2f", "#3a6ea5", "#8250a8", "#a8586b", "#5a7d6c", "#9a8f83"];
+
+async function openDashboard() {
+  showModal("#modalDashboard");
+  const body = $("#dashboardBody");
+  body.innerHTML = "加载中…";
+  try {
+    const d = await apiJson("/api/dashboard");
+    const cats = state.config.topic_categories || {};
+    const t = d.totals;
+    // 分类环图（SVG donut）
+    const total = d.categories.reduce((a, c) => a + c.count, 0) || 1;
+    let angle = -90, slices = "";
+    d.categories.forEach((c, i) => {
+      const deg = c.count / total * 360;
+      const rad = (a) => (a - 90) * Math.PI / 180;
+      const x1 = 60 + 48 * Math.cos(rad(angle)), y1 = 60 + 48 * Math.sin(rad(angle));
+      angle += deg;
+      const x2 = 60 + 48 * Math.cos(rad(angle)), y2 = 60 + 48 * Math.sin(rad(angle));
+      const large = deg > 180 ? 1 : 0;
+      slices += `<path d="M60,60 L${x1},${y1} A48,48 0 ${large} 1 ${x2},${y2} Z" fill="${DASH_COLORS[i % 8]}" stroke="var(--card)" stroke-width="1.5"/>`;
+    });
+    const legend = d.categories.map((c, i) =>
+      `<span><i style="background:${DASH_COLORS[i % 8]}"></i>${cats[c.key] || c.key} ×${c.count}</span>`).join("");
+    // 周趋势柱
+    const maxV = Math.max(1, ...d.weeks.map(w => Math.max(w.drafts, w.sparks)));
+    const bars = d.weeks.map(w => `
+      <div class="dash-bar-col">
+        <div class="dash-bar" style="height:${w.drafts / maxV * 82}%"></div>
+        <div class="dash-bar g" style="height:${w.sparks / maxV * 40}%"></div>
+        <small>${w.label}</small>
+      </div>`).join("");
+    body.innerHTML = `
+      <div class="dash-totals">
+        <div class="stat"><b>${t.sessions}</b><span>话题</span></div>
+        <div class="stat"><b>${t.sparks}</b><span>灵感</span></div>
+        <div class="stat"><b>${t.drafts}</b><span>成稿</span></div>
+        <div class="stat"><b>${t.chars >= 1000 ? (t.chars / 1000).toFixed(1) + "k" : t.chars}</b><span>累计产出字数</span></div>
+      </div>
+      <div class="dash-row">
+        <div class="dash-chart">
+          <h5>话题分类分布</h5>
+          <svg width="120" height="120" viewBox="0 0 120 120" style="display:block;margin:0 auto">${slices || '<circle cx="60" cy="60" r="48" fill="var(--paper-2)"/>'}
+            <circle cx="60" cy="60" r="26" fill="var(--card)"/>
+            <text x="60" y="64" text-anchor="middle" font-size="13" fill="var(--ink-3)">${t.sessions}</text>
+          </svg>
+          <div class="dash-legend">${legend || "<span>还没有分类数据</span>"}</div>
+        </div>
+        <div class="dash-chart" style="flex:1.4">
+          <h5>近 6 周产出（橙=成稿，金=灵感）</h5>
+          <div class="dash-bars">${bars}</div>
+        </div>
+      </div>`;
+  } catch (e) {
+    body.innerHTML = `<div class="collide-loading" style="color:var(--danger)">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  $("#btnTheme").textContent = theme === "dark" ? "☀️" : "🌙";
+  localStorage.setItem("ws_theme", theme);
+}
+
+function initTheme() {
+  const saved = localStorage.getItem("ws_theme");
+  const prefer = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  applyTheme(saved || (prefer ? "dark" : "light"));
+}
+
+function initHotkeys() {
+  document.addEventListener("keydown", (e) => {
+    // Esc 关最上层弹窗
+    if (e.key === "Escape") {
+      const open = [...document.querySelectorAll(".modal-mask")].filter(m => !m.hidden);
+      if (open.length) { open[open.length - 1].hidden = true; return; }
+    }
+    if (!e.ctrlKey || e.shiftKey || e.altKey) return;
+    if (e.key === "Enter") { e.preventDefault(); $("#btnSend").click(); return; }
+    const map = { 1: "sparks", 2: "drafts", 3: "library", 4: "feishu" };
+    if (map[e.key]) {
+      e.preventDefault();
+      $(`.tab[data-tab="${map[e.key]}"]`)?.click();
+    }
+  });
+}
+
 // ───────────────────────── 飞书 ─────────────────────────
 async function refreshFeishu() {
   if (!state.config) return;
@@ -1472,6 +1642,9 @@ async function openSettings() {
     const g = await apiJson("/api/goals");
     $("#cfgWeeklyGoal").value = g.weekly_goal;
   } catch (e) { /* 忽略 */ }
+  // 自动周报开关 + 我的文风
+  $("#cfgAutoWeekly").checked = !!state.config.feishu.auto_weekly;
+  loadUserStyle();
   // 写作画像（异步加载，不阻塞弹窗）
   try {
     const p = await apiJson("/api/profile");
@@ -1495,6 +1668,7 @@ async function saveSettings() {
     folder_token: $("#cfgFsFolder").value.trim(),
   };
   if ($("#cfgFsSecret").value.trim()) feishuCfg.app_secret = $("#cfgFsSecret").value.trim();
+  feishuCfg.auto_weekly = $("#cfgAutoWeekly").checked;
   try {
     await api("/api/config", { method: "POST", body: JSON.stringify({ llm, feishu: feishuCfg }) });
     // 写作目标
@@ -1732,13 +1906,28 @@ async function init() {
     window.open(`/api/sessions/${state.session.id}/export.docx`, "_blank");
   };
 
-  // 目标 / 导入 / 锻造
+  // 目标 / 导入 / 锻造 / 看板 / 主题
   loadGoals();
+  initTheme();
+  initHotkeys();
   $("#goalChip").onclick = openSettings;
   $("#btnImport").onclick = () => showModal("#modalImport");
   $("#btnImportParse").onclick = parseImport;
   $("#btnImportCreate").onclick = createFromImport;
   $("#btnForge").onclick = runForge;
+  $("#btnDashboard").onclick = openDashboard;
+  $("#btnTheme").onclick = () => applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+  $("#btnStyleLearn").onclick = learnStyle;
+  $("#btnStyleClear").onclick = async () => {
+    if (!confirm("清除文风卡？")) return;
+    try {
+      await api("/api/style_learn", { method: "DELETE" });
+      await loadUserStyle();
+      state.config = await apiJson("/api/config");
+      fillDraftOptions();
+      toast("文风卡已清除");
+    } catch (e) { toast(e.message, true); }
+  };
 
   // 灵感库同步飞书
   $("#btnLibSync").onclick = async () => {

@@ -341,6 +341,46 @@ input, select, textarea { font-family: inherit; color: var(--ink); }
 .ext-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }
 .ext-chip button { border: none; background: transparent; color: inherit; cursor: pointer; padding: 0; font-size: 13px; }
 
+/* ─────────── 深色模式 ─────────── */
+[data-theme="dark"] {
+  --paper: #201b16;
+  --paper-2: #292219;
+  --card: #2d261e;
+  --ink: #e9e1d3;
+  --ink-2: #b3a795;
+  --ink-3: #8a7f6f;
+  --line: #3e362a;
+  --accent: #d97e57;
+  --accent-soft: #3a2a1f;
+  --gold: #d0a44a;
+  --gold-soft: #362c18;
+  --shadow: 0 2px 10px rgba(0, 0, 0, .35);
+}
+[data-theme="dark"] .msg.user .msg-body { background: #3a3125; color: var(--ink); }
+[data-theme="dark"] .cat-chip { color: #fff; }
+[data-theme="dark"] .spark-line { color: #d8c48a; }
+[data-theme="dark"] .btn { background: var(--card); }
+[data-theme="dark"] #inputBox, [data-theme="dark"] .field input,
+[data-theme="dark"] .field select, [data-theme="dark"] .field textarea { background: var(--paper-2); }
+
+/* ─────────── 看板 ─────────── */
+.dash-body { font-size: 14px; }
+.dash-totals { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 18px; }
+.dash-totals .stat { text-align: center; flex: 1; min-width: 90px; background: var(--paper-2); border-radius: 10px; padding: 10px; }
+.dash-totals .stat b { display: block; font-size: 22px; font-family: "Noto Serif SC", serif; color: var(--accent); }
+.dash-totals .stat span { font-size: 11.5px; color: var(--ink-3); }
+.dash-row { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start; }
+.dash-chart { flex: 1; min-width: 220px; }
+.dash-chart h5 { font-size: 13px; color: var(--ink-2); margin-bottom: 10px; }
+.dash-legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.dash-legend span { font-size: 11.5px; color: var(--ink-2); display: inline-flex; align-items: center; gap: 4px; }
+.dash-legend i { width: 9px; height: 9px; border-radius: 3px; display: inline-block; }
+.dash-bars { display: flex; align-items: flex-end; gap: 8px; height: 120px; padding-top: 6px; }
+.dash-bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; height: 100%; justify-content: flex-end; }
+.dash-bar { width: 70%; border-radius: 4px 4px 0 0; background: var(--accent); min-height: 2px; position: relative; }
+.dash-bar.g { background: var(--gold); }
+.dash-bar-col small { font-size: 10px; color: var(--ink-3); }
+
 /* ─────────── 目标进度 / 导入 / 锻造 ─────────── */
 .goal-chip {
   display: inline-flex; align-items: center; gap: 6px; cursor: pointer;

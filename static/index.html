@@ -21,7 +21,9 @@
     <select id="categoryFilter" title="按分类筛选话题"></select>
     <select id="sessionSelect" title="切换话题"></select>
     <button id="btnImport" class="btn btn-ghost" title="粘贴长文导入素材">📥</button>
+    <button id="btnDashboard" class="btn btn-ghost" title="写作看板">📊</button>
     <button id="btnWeekly" class="btn btn-ghost" title="写作周报">📈</button>
+    <button id="btnTheme" class="btn btn-ghost" title="深色/浅色切换">🌙</button>
     <button id="btnNewTopic" class="btn btn-primary">＋ 新话题</button>
     <button id="btnSettings" class="btn btn-ghost" title="设置">⚙</button>
   </div>
@@ -313,6 +315,17 @@
   </div>
 </div>
 
+<!-- ═══════════ 写作看板弹窗 ═══════════ -->
+<div id="modalDashboard" class="modal-mask" hidden>
+  <div class="modal modal-wide">
+    <h3>📊 写作看板</h3>
+    <div id="dashboardBody" class="dash-body">加载中…</div>
+    <div class="modal-actions">
+      <button class="btn btn-primary" data-close>关闭</button>
+    </div>
+  </div>
+</div>
+
 <!-- ═══════════ 周报弹窗 ═══════════ -->
 <div id="modalWeekly" class="modal-mask" hidden>
   <div class="modal modal-wide">
@@ -378,6 +391,15 @@
         </div>
       </section>
       <section>
+        <h4>我的文风（粘贴你过去的文字，蒸馏专属文风卡，用于所有文案生成）</h4>
+        <textarea id="styleSample" rows="4" placeholder="粘贴 2~3 段你过去写的东西（文章、朋友圈、日记都行，越长越准）"></textarea>
+        <div class="modal-actions" style="margin-top:8px">
+          <button id="btnStyleLearn" class="btn btn-primary btn-sm">🖋 蒸馏文风</button>
+          <button id="btnStyleClear" class="btn btn-ghost btn-sm" hidden>清除</button>
+        </div>
+        <textarea id="styleCard" class="profile-text" rows="5" readonly hidden></textarea>
+      </section>
+      <section>
         <h4>飞书云文档</h4>
         <div class="field-row">
           <div class="field"><label>App ID</label><input id="cfgFsAppId"></div>
@@ -387,6 +409,10 @@
           <label>文件夹 token（留空 = 自动建「✍️ 写作共创坊」）</label>
           <input id="cfgFsFolder" placeholder="fld… 或文件夹链接">
         </div>
+        <label class="switch" style="margin-top:6px">
+          <input type="checkbox" id="cfgAutoWeekly">
+          <span>每周自动生成上周周报并推送飞书</span>
+        </label>
       </section>
     </div>
     <div class="modal-actions">

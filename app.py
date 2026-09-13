@@ -331,9 +331,59 @@ async def _sync_turn_locked(sid: str):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     writer.start()
+    asyncio.create_task(_auto_weekly_loop())
     yield
     await llm.close()
     fs.http.close()
+
+
+async def _auto_weekly_loop():
+    """自动周报：新一周开始后首次运行时，自动生成上周周报并推送飞书（开关可关）"""
+    while True:
+        try:
+            cfg = load_config().get("feishu", {})
+            if cfg.get("auto_weekly") and (fs.enabled or feishu.MOCK):
+                st = store.load_state()
+                pushed = (st.get("auto_weekly") or {}).get("week", "")
+                this_week = store.today()[:7] + "-w" + _isoweek()
+                if pushed != this_week:
+                    # 上周有成稿才推
+                    import time as _t
+                    import datetime
+                    today = datetime.date.today()
+                    last_monday = today - datetime.timedelta(days=today.weekday() + 7)
+                    ws = _t.mktime(last_monday.timetuple())
+                    we = ws + 7 * 86400
+                    drafts = 0
+                    for meta in store.list_sessions():
+                        s2 = store.load_session(meta["id"])
+                        if s2:
+                            drafts += sum(1 for dd in s2.get("drafts", [])
+                                          if ws <= dd.get("created_at", 0) < we)
+                    if drafts > 0:
+                        log.info("自动周报：生成上周（%d 篇成稿）并推送飞书", drafts)
+                        text = await llm.chat_once(
+                            [{"role": "user", "content": prompts.weekly_report_prompt(_week_stats_text())}],
+                            model=llm.draft_model, max_tokens=1500, temperature=0.7, thinking=False,
+                        )
+                        st = store.load_state()
+                        st["weekly_report"] = {"week": this_week, "text": text.strip(), "ts": store.now_ts()}
+                        doc = st.get("weekly_doc") or {}
+                        if not doc.get("token"):
+                            created = await asyncio.to_thread(fs.create_doc, "📊 写作共创坊 · 周报")
+                            doc = {"token": created["token"], "url": created["url"]}
+                            st["weekly_doc"] = doc
+                        await writer.enqueue(doc["token"],
+                                             feishu.summary_blocks(f"📈 写作周报 · {store.today_label()}", text.strip()),
+                                             label="自动周报")
+                        st["auto_weekly"] = {"week": this_week, "ts": store.now_ts()}
+                        store.save_state(st)
+                    else:
+                        st["auto_weekly"] = {"week": this_week, "ts": store.now_ts()}
+                        store.save_state(st)
+        except Exception as e:
+            log.warning("自动周报任务失败: %s", e)
+        await asyncio.sleep(3600)
 
 
 app = FastAPI(title="写作共创坊", lifespan=lifespan)
@@ -377,8 +427,10 @@ def get_config():
             "folder_token": fs_cfg.get("folder_token", ""),
             "auto_share_tenant": bool(fs_cfg.get("auto_share_tenant")),
             "auto_record": bool(fs_cfg.get("auto_record", True)),
+            "auto_weekly": bool(fs_cfg.get("auto_weekly", True)),
             "enabled": fs.enabled,
         },
+        "has_user_style": bool(store.load_state().get("user_style_card", {}).get("text")),
         "server": {"lan": bool(CONFIG.get("server", {}).get("lan"))},
         "modes": store.DISCUSSION_MODES,
         "personas": prompts.PARTNER_PERSONAS,
@@ -885,6 +937,11 @@ def _draft_material(s: dict, fmt: str, tone: str, length: str, extra: str,
     fmt_label = prompts.DRAFT_FORMATS.get(fmt, fmt)
     profile = store.get_profile().get("text", "")
     sparks_part = _selected_sparks_text(s, spark_ids, ext_sparks)
+    # 「我的文风」：用户蒸馏的专属文风卡，走 custom 通道注入
+    if style == "mine":
+        card = store.load_state().get("user_style_card", {}).get("text", "")
+        if card:
+            style, style_custom = "custom", card
     return [
         {"role": "system", "content": prompts.draft_system_prompt(
             fmt_label,
@@ -958,6 +1015,11 @@ async def draft_revise(sid: str, did: str, body: ReviseBody):
                 yield _sse({"t": "error", "v": "文案不存在"})
                 return
             fmt_label = prompts.DRAFT_FORMATS.get(d["format"], d["format"])
+            rv_style, rv_custom = d.get("style", "none"), ""
+            if rv_style == "mine":
+                card = store.load_state().get("user_style_card", {}).get("text", "")
+                if card:
+                    rv_style, rv_custom = "custom", card
             msgs = [
                 {"role": "system", "content": prompts.draft_system_prompt(
                     fmt_label,
@@ -966,7 +1028,8 @@ async def draft_revise(sid: str, did: str, body: ReviseBody):
                     "",
                     store.get_profile().get("text", ""),
                     d["format"],
-                    d.get("style", "none"),
+                    rv_style,
+                    rv_custom,
                 )},
                 {"role": "user", "content": (
                     "【讨论材料】\n" + _transcript(s, 8000) + "\n【灵感卡片】\n" + _sparks_text(s)
@@ -1087,11 +1150,16 @@ async def draft_convert(sid: str, did: str, body: ConvertBody):
                 return
             src_label = prompts.DRAFT_FORMATS.get(d["format"], d["format"])
             dst_label = prompts.DRAFT_FORMATS.get(body.format, body.format)
+            style_key, style_custom = d.get("style", "none"), ""
+            if style_key == "mine":
+                card = store.load_state().get("user_style_card", {}).get("text", "")
+                if card:
+                    style_key, style_custom = "custom", card
             msgs = [
                 {"role": "system", "content": prompts.draft_system_prompt(
                     dst_label, prompts.DRAFT_TONES.get(d.get("tone", "casual"), "口语随和"),
                     prompts.DRAFT_LENGTHS.get(d.get("length", "medium"), "中等长度"),
-                    "", "", body.format, d.get("style", "none"),
+                    "", "", body.format, style_key, style_custom,
                 )},
                 {"role": "user", "content": (
                     f"【改写任务】\n{prompts.convert_prompt(src_label, dst_label)}\n\n"
@@ -1526,6 +1594,125 @@ async def draft_checkup(sid: str, did: str):
             raise HTTPException(502, f"体检失败: {e}")
 
 
+# ---------------------------------------------------------------------------
+# 我的文风 / 重答 / 写作看板
+# ---------------------------------------------------------------------------
+class StyleLearnBody(BaseModel):
+    text: str
+
+
+@app.get("/api/style_learn")
+def style_learn_get():
+    card = store.load_state().get("user_style_card") or {}
+    return {"card": card.get("text", ""), "has": bool(card.get("text")), "ts": card.get("ts", 0)}
+
+
+@app.post("/api/style_learn")
+async def style_learn(body: StyleLearnBody):
+    """文风采集：蒸馏作者专属文风卡"""
+    text = body.text.strip()
+    if len(text) < 100:
+        raise HTTPException(400, "样本太短（至少 100 字，多多益善）")
+    try:
+        card = await llm.chat_once(
+            [{"role": "user", "content": prompts.style_learn_prompt() + text[:16000]}],
+            model=llm.draft_model, max_tokens=400, temperature=0.3, thinking=False,
+        )
+        if len(card.strip()) < 30:
+            raise RuntimeError("蒸馏结果过短")
+        st = store.load_state()
+        st["user_style_card"] = {"text": card.strip()[:600], "ts": store.now_ts()}
+        store.save_state(st)
+        return {"card": card.strip()[:600]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"文风蒸馏失败: {e}")
+
+
+@app.delete("/api/style_learn")
+def style_learn_clear():
+    st = store.load_state()
+    st.pop("user_style_card", None)
+    store.save_state(st)
+    return {"ok": True}
+
+
+@app.post("/api/sessions/{sid}/regen")
+async def chat_regen(sid: str):
+    """重答：丢弃最后一条搭档回复，重新生成"""
+    async def gen():
+        async with _lock(sid):
+            s = _get_session(sid)
+            if not s.get("messages") or s["messages"][-1]["role"] != "assistant":
+                yield _sse({"t": "error", "v": "最后一条不是搭档回复，无法重答"})
+                return
+            s["messages"].pop()
+            store.save_session(s)
+            full, ok = "", False
+            try:
+                async for piece in llm.chat_stream(_chat_messages(s), model=llm.model):
+                    full += piece
+                    yield _sse({"t": "delta", "v": piece})
+                ok = bool(full.strip())
+                if not ok:
+                    raise RuntimeError("空回复")
+            except Exception as e:
+                yield _sse({"t": "error", "v": str(e)[:300]})
+                return
+            s = _get_session(sid)
+            s["messages"].append({"role": "assistant", "content": full, "ts": store.now_ts()})
+            store.save_session(s)
+            task = asyncio.create_task(_sync_turn_to_feishu(sid))
+            _bg_tasks.add(task)
+            task.add_done_callback(_bg_tasks.discard)
+            yield _sse({"t": "done"})
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/dashboard")
+def dashboard():
+    """写作看板数据：分类分布 / 每周成稿趋势 / 灵感与产出统计"""
+    import time as _t
+    import datetime
+    sessions = store.list_sessions()
+    cats = {}
+    for m in sessions:
+        if m.get("category"):
+            cats[m["category"]] = cats.get(m["category"], 0) + 1
+    # 近 6 周成稿趋势
+    weeks = []
+    today = datetime.date.today()
+    monday = today - datetime.timedelta(days=today.weekday())
+    for i in range(5, -1, -1):
+        ws = _t.mktime((monday - datetime.timedelta(weeks=i)).timetuple())
+        we = ws + 7 * 86400
+        drafts = sparks = 0
+        for m in sessions:
+            s = store.load_session(m["id"])
+            if not s:
+                continue
+            drafts += sum(1 for d in s.get("drafts", []) if ws <= d.get("created_at", 0) < we)
+            sparks += sum(1 for sp in s.get("sparks", []) if ws <= sp.get("ts", 0) < we)
+        weeks.append({
+            "label": f"{(monday - datetime.timedelta(weeks=i)).month}/{(monday - datetime.timedelta(weeks=i)).day}",
+            "drafts": drafts, "sparks": sparks,
+        })
+    total_drafts = sum(m.get("draft_count", 0) for m in sessions)
+    return {
+        "categories": [{"key": k, "count": v} for k, v in cats.items()],
+        "weeks": weeks,
+        "totals": {
+            "sessions": len(sessions),
+            "sparks": sum(m.get("spark_count", 0) for m in sessions),
+            "drafts": total_drafts,
+            "chars": sum(m.get("chars", 0) for m in sessions),
+        },
+    }
+
+
 class DraftPatch(BaseModel):
     content: str
 
@@ -1621,15 +1808,26 @@ async def feishu_check():
 
 
 class FeishuToggle(BaseModel):
-    auto_record: bool
+    auto_record: Optional[bool] = None
+    auto_weekly: Optional[bool] = None
 
 
 @app.post("/api/feishu/toggle")
 async def feishu_toggle(body: FeishuToggle):
-    CONFIG["feishu"]["auto_record"] = body.auto_record
+    if body.auto_record is not None:
+        CONFIG["feishu"]["auto_record"] = body.auto_record
+    if body.auto_weekly is not None:
+        CONFIG["feishu"]["auto_weekly"] = body.auto_weekly
+        st = store.load_state()
+        if not body.auto_weekly:
+            st.pop("auto_weekly", None)  # 关掉时清标记，重开可立即生效
+        else:
+            st["auto_weekly"] = {"week": "", "ts": store.now_ts()}
+        store.save_state(st)
     save_config(CONFIG)
     fs.update(CONFIG["feishu"])
-    return {"ok": True, "auto_record": body.auto_record}
+    return {"ok": True, "auto_record": fs.auto_record,
+            "auto_weekly": bool(CONFIG["feishu"].get("auto_weekly"))}
 
 
 @app.post("/api/sessions/{sid}/feishu/resync")
